@@ -11,7 +11,7 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://localhost:3001', 
-    'https://dom-pbh-monitor.vercel.app',
+    'https://dom-pbh-frontend.vercel.app',
     'https://*.vercel.app'
   ],
   credentials: true
