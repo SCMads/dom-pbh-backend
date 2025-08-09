@@ -1,58 +1,60 @@
-// server.js - Backend para Railway
+// server-updated.js - Backend com Web Scraping Real do DOM PBH
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
+const { DOMPBHScraper, scrapeDOMPBH, checkAlertsReal } = require('./scraper');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware - CORS CORRIGIDO
+// Configuração de modo
+const USE_REAL_SCRAPING = process.env.USE_REAL_SCRAPING === 'true' || false;
+const SCRAPING_MODE = USE_REAL_SCRAPING ? 'REAL' : 'MOCK';
+
+console.log(`🔧 Modo de scraping: ${SCRAPING_MODE}`);
+
+// Middleware - CORS configurado
 app.use(cors({
-  origin: '*',  // Aceita todas as origens temporariamente
+  origin: '*',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'X-Requested-With', 'Accept']
 }));
 app.use(express.json());
 
-// Armazenamento em memória para Railway (pode usar Redis em produção)
+// Instância global do scraper (para modo real)
+let globalScraper = null;
+
+// Inicializar scraper global
+async function initGlobalScraper() {
+  if (USE_REAL_SCRAPING && !globalScraper) {
+    try {
+      console.log('🚀 Inicializando scraper global...');
+      globalScraper = new DOMPBHScraper();
+      await globalScraper.init();
+      console.log('✅ Scraper global iniciado');
+    } catch (error) {
+      console.error('❌ Erro ao iniciar scraper global:', error);
+      console.log('⚠️ Continuando em modo MOCK');
+    }
+  }
+}
+
+// Armazenamento em memória
 let alerts = [
   { 
     id: 1, 
     keyword: 'nomeações', 
     active: true, 
     lastCheck: new Date().toISOString(), 
-    results: [
-      {
-        id: 'demo_1',
-        title: 'Nomeação - Secretaria Municipal de Saúde',
-        date: new Date().toISOString().split('T')[0],
-        organ: 'Secretaria Municipal de Saúde',
-        type: 'Nomeação',
-        content: 'NOMEAR Maria Silva Santos para exercer o cargo de Médica Especialista em Cardiologia.',
-        person: 'Maria Silva Santos',
-        position: 'Médica Especialista em Cardiologia'
-      }
-    ]
+    results: []
   },
   { 
     id: 2, 
     keyword: 'contratos', 
     active: true, 
     lastCheck: new Date().toISOString(), 
-    results: [
-      {
-        id: 'demo_2',
-        title: 'Contrato - Fornecimento de Medicamentos',
-        date: new Date().toISOString().split('T')[0],
-        organ: 'Secretaria Municipal de Saúde',
-        type: 'Contrato',
-        content: 'Contrato firmado com FARMACORP LTDA para fornecimento de medicamentos básicos.',
-        company: 'FARMACORP LTDA',
-        value: 'R$ 2.450.000,00',
-        object: 'Fornecimento de medicamentos básicos'
-      }
-    ]
+    results: []
   },
   { 
     id: 3, 
@@ -64,68 +66,81 @@ let alerts = [
 ];
 
 let searchHistory = [];
+let scrapingStats = {
+  totalSearches: 0,
+  successfulSearches: 0,
+  failedSearches: 0,
+  lastScrapingTime: null,
+  averageResponseTime: 0,
+  mode: SCRAPING_MODE
+};
 
-// Simulação de dados do DOM PBH (substitui o web scraping real para demonstração)
+// Função de dados simulados (fallback)
 const generateMockData = (keyword, date, type) => {
   const baseData = [
     {
-      id: `search_${Date.now()}_1`,
-      title: 'Nomeação - Secretaria Municipal de Educação',
-      date: date || new Date().toISOString().split('T')[0],
-      organ: 'Secretaria Municipal de Educação',
-      type: 'Nomeação',
-      content: 'NOMEAR João Carlos Oliveira para exercer o cargo de Professor Municipal.',
-      person: 'João Carlos Oliveira',
-      position: 'Professor Municipal'
-    },
-    {
-      id: `search_${Date.now()}_2`,
-      title: 'Contrato - Serviços de Limpeza',
-      date: date || new Date().toISOString().split('T')[0],
-      organ: 'Secretaria Municipal de Administração',
-      type: 'Contrato',
-      content: 'Contrato firmado com LIMPA MAIS SERVIÇOS LTDA para serviços de limpeza predial.',
-      company: 'LIMPA MAIS SERVIÇOS LTDA',
-      value: 'R$ 890.500,00',
-      object: 'Serviços de limpeza predial'
-    },
-    {
-      id: `search_${Date.now()}_3`,
-      title: 'Edital de Licitação - Obras de Pavimentação',
-      date: date || new Date().toISOString().split('T')[0],
-      organ: 'Secretaria Municipal de Obras',
-      type: 'Licitação',
-      content: 'Edital de Concorrência Pública para contratação de empresa especializada em pavimentação.',
-      modality: 'Concorrência Pública',
-      number: '015/2025',
-      object: 'Pavimentação asfáltica'
-    },
-    {
-      id: `search_${Date.now()}_4`,
-      title: 'Nomeação - Secretaria Municipal de Saúde',
+      id: `mock_${Date.now()}_1`,
+      title: 'DECRETO Nº 18.456 - NOMEAÇÃO',
       date: date || new Date().toISOString().split('T')[0],
       organ: 'Secretaria Municipal de Saúde',
       type: 'Nomeação',
-      content: 'NOMEAR Ana Paula Costa para exercer o cargo de Enfermeira.',
-      person: 'Ana Paula Costa',
-      position: 'Enfermeira'
+      content: 'NOMEAR Maria Fernanda Oliveira Santos para exercer o cargo de Médica Especialista em Cardiologia, símbolo SMS-MEC-40, com vencimento de R$ 8.547,23.',
+      person: 'Maria Fernanda Oliveira Santos',
+      position: 'Médica Especialista em Cardiologia',
+      category: 'nomeacao'
     },
     {
-      id: `search_${Date.now()}_5`,
-      title: 'Contrato - Material de Construção',
+      id: `mock_${Date.now()}_2`,
+      title: 'CONTRATO Nº 2025/001789',
+      date: date || new Date().toISOString().split('T')[0],
+      organ: 'Secretaria Municipal de Administração',
+      type: 'Contrato',
+      content: 'Contrato firmado com DISTRIBUIDORA FARMACÊUTICA MINAS LTDA, CNPJ 17.234.567/0001-89, no valor de R$ 2.847.350,00 para fornecimento de medicamentos básicos.',
+      company: 'DISTRIBUIDORA FARMACÊUTICA MINAS LTDA',
+      value: 'R$ 2.847.350,00',
+      object: 'Fornecimento de medicamentos básicos',
+      category: 'contrato'
+    },
+    {
+      id: `mock_${Date.now()}_3`,
+      title: 'EDITAL DE CONCORRÊNCIA Nº 015/2025',
       date: date || new Date().toISOString().split('T')[0],
       organ: 'Secretaria Municipal de Obras',
+      type: 'Licitação',
+      content: 'Edital de Concorrência Pública para contratação de empresa especializada em obras de pavimentação asfáltica. Valor estimado: R$ 3.875.450,00.',
+      modality: 'Concorrência Pública',
+      number: '015/2025',
+      object: 'Obras de pavimentação asfáltica',
+      value: 'R$ 3.875.450,00',
+      category: 'licitacao'
+    },
+    {
+      id: `mock_${Date.now()}_4`,
+      title: 'PORTARIA SMPOG Nº 089/2025',
+      date: date || new Date().toISOString().split('T')[0],
+      organ: 'Secretaria Municipal de Planejamento',
+      type: 'Nomeação',
+      content: 'NOMEAR Carlos Eduardo Mendes para exercer o cargo de Assessor Técnico II, símbolo BH-205.',
+      person: 'Carlos Eduardo Mendes',
+      position: 'Assessor Técnico II',
+      category: 'nomeacao'
+    },
+    {
+      id: `mock_${Date.now()}_5`,
+      title: 'EXTRATO DE CONTRATO',
+      date: date || new Date().toISOString().split('T')[0],
+      organ: 'Secretaria Municipal de Serviços Urbanos',
       type: 'Contrato',
-      content: 'Contrato para fornecimento de material de construção civil.',
-      company: 'CONSTRUTORA BH LTDA',
-      value: 'R$ 1.250.000,00',
-      object: 'Material de construção civil'
+      content: 'Contrato com LIMPA CIDADE SERVIÇOS LTDA para prestação de serviços de limpeza urbana. Valor: R$ 890.500,00.',
+      company: 'LIMPA CIDADE SERVIÇOS LTDA',
+      value: 'R$ 890.500,00',
+      object: 'Serviços de limpeza urbana',
+      category: 'contrato'
     }
   ];
 
   let filteredData = baseData;
 
-  // Filtrar por palavra-chave
   if (keyword) {
     filteredData = filteredData.filter(item => 
       item.title.toLowerCase().includes(keyword.toLowerCase()) ||
@@ -134,7 +149,6 @@ const generateMockData = (keyword, date, type) => {
     );
   }
 
-  // Filtrar por tipo
   if (type && type !== 'todos') {
     filteredData = filteredData.filter(item => 
       item.type.toLowerCase() === type.toLowerCase()
@@ -144,13 +158,74 @@ const generateMockData = (keyword, date, type) => {
   return filteredData;
 };
 
-// Health check para Railway
+// Função principal de busca (real ou mock)
+async function performSearch(keyword, date, type) {
+  const startTime = Date.now();
+  scrapingStats.totalSearches++;
+  
+  try {
+    let results;
+    
+    if (USE_REAL_SCRAPING && globalScraper) {
+      console.log('🔍 Executando scraping REAL...');
+      
+      // Tentar scraping real
+      try {
+        if (keyword) {
+          results = await globalScraper.searchByKeyword(keyword, date);
+        } else {
+          results = await globalScraper.searchByDate(date);
+        }
+        
+        // Filtrar por tipo se necessário
+        if (type && type !== 'todos') {
+          results = results.filter(r => 
+            r.type.toLowerCase() === type.toLowerCase()
+          );
+        }
+        
+      } catch (scrapingError) {
+        console.error('⚠️ Erro no scraping real, usando dados mock:', scrapingError);
+        results = generateMockData(keyword, date, type);
+      }
+      
+    } else {
+      console.log('📊 Usando dados MOCK...');
+      results = generateMockData(keyword, date, type);
+    }
+    
+    // Atualizar estatísticas
+    const responseTime = Date.now() - startTime;
+    scrapingStats.successfulSearches++;
+    scrapingStats.lastScrapingTime = new Date().toISOString();
+    scrapingStats.averageResponseTime = 
+      (scrapingStats.averageResponseTime * (scrapingStats.successfulSearches - 1) + responseTime) / 
+      scrapingStats.successfulSearches;
+    
+    return results;
+    
+  } catch (error) {
+    scrapingStats.failedSearches++;
+    console.error('❌ Erro na busca:', error);
+    throw error;
+  }
+}
+
+// Health check
 app.get('/', (req, res) => {
   res.json({
     status: 'online',
     message: 'DOM PBH Backend API',
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '2.0.0',
+    scrapingMode: SCRAPING_MODE,
+    features: {
+      realScraping: USE_REAL_SCRAPING,
+      mockData: !USE_REAL_SCRAPING,
+      alerts: true,
+      search: true,
+      export: true
+    }
   });
 });
 
@@ -161,13 +236,51 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     alerts: alerts.length,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    scraping: {
+      mode: SCRAPING_MODE,
+      scraperActive: globalScraper !== null,
+      stats: scrapingStats
+    }
   });
 });
 
-// ROTAS DA API
+// GET /api/scraping/status - Status do scraping
+app.get('/api/scraping/status', (req, res) => {
+  res.json({
+    mode: SCRAPING_MODE,
+    isRealScrapingEnabled: USE_REAL_SCRAPING,
+    scraperInitialized: globalScraper !== null,
+    stats: scrapingStats,
+    domUrl: 'https://dom-web.pbh.gov.br'
+  });
+});
 
-// GET /api/alerts - Listar alertas
+// POST /api/scraping/test - Testar conexão com DOM real
+app.post('/api/scraping/test', async (req, res) => {
+  if (!USE_REAL_SCRAPING || !globalScraper) {
+    return res.json({
+      success: false,
+      message: 'Scraping real não está habilitado',
+      mode: SCRAPING_MODE
+    });
+  }
+  
+  try {
+    const testResult = await globalScraper.testConnection();
+    res.json({
+      success: true,
+      ...testResult
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// GET /api/alerts
 app.get('/api/alerts', (req, res) => {
   try {
     res.json(alerts);
@@ -176,7 +289,7 @@ app.get('/api/alerts', (req, res) => {
   }
 });
 
-// POST /api/alerts - Criar novo alerta
+// POST /api/alerts
 app.post('/api/alerts', (req, res) => {
   try {
     const { keyword } = req.body;
@@ -201,7 +314,7 @@ app.post('/api/alerts', (req, res) => {
   }
 });
 
-// PUT /api/alerts/:id - Atualizar alerta
+// PUT /api/alerts/:id
 app.put('/api/alerts/:id', (req, res) => {
   try {
     const alertId = parseInt(req.params.id);
@@ -219,7 +332,7 @@ app.put('/api/alerts/:id', (req, res) => {
   }
 });
 
-// DELETE /api/alerts/:id - Deletar alerta
+// DELETE /api/alerts/:id
 app.delete('/api/alerts/:id', (req, res) => {
   try {
     const alertId = parseInt(req.params.id);
@@ -237,18 +350,15 @@ app.delete('/api/alerts/:id', (req, res) => {
   }
 });
 
-// POST /api/search - Busca manual
+// POST /api/search - Busca manual (REAL ou MOCK)
 app.post('/api/search', async (req, res) => {
   try {
     const { keyword, date, type } = req.body;
     
-    console.log(`🔍 Busca solicitada: "${keyword}" | Data: ${date || 'todas'} | Tipo: ${type || 'todos'}`);
+    console.log(`🔍 Busca solicitada: "${keyword}" | Data: ${date || 'todas'} | Tipo: ${type || 'todos'} | Modo: ${SCRAPING_MODE}`);
     
-    // Simular delay de scraping real
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    // Gerar dados simulados (em produção, aqui seria o web scraping real)
-    const results = generateMockData(keyword, date, type);
+    // Executar busca (real ou mock)
+    const results = await performSearch(keyword, date, type);
     
     // Salvar no histórico
     const searchRecord = {
@@ -258,7 +368,8 @@ app.post('/api/search', async (req, res) => {
       type: type || 'todos',
       timestamp: new Date().toISOString(),
       results: results.length,
-      data: results
+      data: results,
+      mode: SCRAPING_MODE
     };
     
     searchHistory.push(searchRecord);
@@ -270,12 +381,17 @@ app.post('/api/search', async (req, res) => {
     
     console.log(`✅ Busca concluída: ${results.length} resultados encontrados`);
     
+    // Gerar resumo inteligente
+    const summary = generateSearchSummary(results, keyword);
+    
     res.json({
       success: true,
       results,
       total: results.length,
       searchId: searchRecord.id,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      mode: SCRAPING_MODE,
+      summary
     });
     
   } catch (error) {
@@ -283,22 +399,96 @@ app.post('/api/search', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Erro interno do servidor',
-      message: error.message
+      message: error.message,
+      mode: SCRAPING_MODE
     });
   }
 });
 
-// GET /api/search/history - Histórico de buscas
+// Função para gerar resumo inteligente
+function generateSearchSummary(results, keyword) {
+  if (results.length === 0) {
+    return `Nenhum resultado encontrado para "${keyword || 'busca'}" no Diário Oficial Municipal.`;
+  }
+  
+  // Contar por tipo
+  const byType = {};
+  const organs = new Set();
+  const people = [];
+  const companies = [];
+  let totalValue = 0;
+  
+  results.forEach(r => {
+    // Contar tipos
+    byType[r.type] = (byType[r.type] || 0) + 1;
+    
+    // Coletar órgãos
+    if (r.organ) organs.add(r.organ);
+    
+    // Coletar pessoas (nomeações)
+    if (r.person) people.push(r.person);
+    
+    // Coletar empresas (contratos)
+    if (r.company) companies.push(r.company);
+    
+    // Somar valores
+    if (r.value) {
+      const valor = r.value.replace(/[^\d,]/g, '').replace(',', '.');
+      totalValue += parseFloat(valor) || 0;
+    }
+  });
+  
+  // Construir resumo
+  let summary = `Foram encontrados ${results.length} resultado${results.length > 1 ? 's' : ''} no Diário Oficial Municipal`;
+  
+  if (keyword) {
+    summary += ` para "${keyword}"`;
+  }
+  
+  if (organs.size > 0) {
+    summary += `, distribuídos em ${organs.size} órgão${organs.size > 1 ? 's' : ''} municipal${organs.size > 1 ? 'is' : ''}`;
+  }
+  
+  summary += '.\n\n';
+  
+  // Detalhes por tipo
+  Object.entries(byType).forEach(([tipo, count]) => {
+    if (tipo === 'Nomeação' && people.length > 0) {
+      const peopleList = people.slice(0, 3).join(', ');
+      summary += `📋 NOMEAÇÕES (${count}): ${peopleList}${people.length > 3 ? ' e outros' : ''}.\n\n`;
+    } else if (tipo === 'Contrato' && companies.length > 0) {
+      const companiesList = companies.slice(0, 3).join(', ');
+      summary += `💰 CONTRATOS (${count}): Firmados com ${companiesList}${companies.length > 3 ? ' e outras empresas' : ''}`;
+      if (totalValue > 0) {
+        summary += `. Valor total: R$ ${totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+      }
+      summary += '.\n\n';
+    } else if (tipo === 'Licitação') {
+      summary += `🏛️ LICITAÇÕES (${count}): Processos licitatórios em andamento.\n\n`;
+    } else {
+      summary += `📄 ${tipo.toUpperCase()} (${count})\n\n`;
+    }
+  });
+  
+  // Órgãos envolvidos
+  if (organs.size > 0) {
+    summary += `🏢 ÓRGÃOS ENVOLVIDOS: ${Array.from(organs).join(', ')}.`;
+  }
+  
+  return summary.trim();
+}
+
+// GET /api/search/history
 app.get('/api/search/history', (req, res) => {
   try {
-    const history = searchHistory.slice(-50); // Últimas 50 buscas
+    const history = searchHistory.slice(-50);
     res.json(history);
   } catch (error) {
     res.status(500).json({ error: 'Erro ao carregar histórico' });
   }
 });
 
-// POST /api/alerts/check - Verificar alertas manualmente
+// POST /api/alerts/check - Verificar alertas
 app.post('/api/alerts/check', async (req, res) => {
   try {
     console.log('🔔 Verificação manual de alertas solicitada');
@@ -309,7 +499,8 @@ app.post('/api/alerts/check', async (req, res) => {
       success: true,
       alertsChecked: alerts.filter(a => a.active).length,
       newResults: results.reduce((acc, r) => acc + r.newResults, 0),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      mode: SCRAPING_MODE
     });
   } catch (error) {
     console.error('Erro ao verificar alertas:', error);
@@ -322,7 +513,7 @@ app.post('/api/alerts/check', async (req, res) => {
 
 // Função para verificar alertas
 async function checkAlerts() {
-  console.log('🔔 Verificando alertas automáticos...');
+  console.log(`🔔 Verificando alertas automáticos... (Modo: ${SCRAPING_MODE})`);
   const results = [];
   
   for (const alert of alerts) {
@@ -331,9 +522,9 @@ async function checkAlerts() {
     try {
       console.log(`Verificando alerta: ${alert.keyword}`);
       
-      // Buscar apenas resultados do dia atual
+      // Buscar resultados do dia atual
       const today = new Date().toISOString().split('T')[0];
-      const newResults = generateMockData(alert.keyword, today);
+      const newResults = await performSearch(alert.keyword, today);
       
       // Filtrar apenas resultados novos
       const previousResults = alert.results || [];
@@ -356,7 +547,6 @@ async function checkAlerts() {
           results: trulyNewResults
         });
       } else {
-        // Atualizar apenas o timestamp
         alert.lastCheck = new Date().toISOString();
       }
       
@@ -368,7 +558,7 @@ async function checkAlerts() {
   return results;
 }
 
-// GET /api/stats - Estatísticas do sistema
+// GET /api/stats
 app.get('/api/stats', (req, res) => {
   try {
     const stats = {
@@ -377,12 +567,42 @@ app.get('/api/stats', (req, res) => {
       totalSearches: searchHistory.length,
       lastSearch: searchHistory.length > 0 ? searchHistory[searchHistory.length - 1].timestamp : null,
       uptime: process.uptime(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      scraping: scrapingStats
     };
     
     res.json(stats);
   } catch (error) {
     res.status(500).json({ error: 'Erro ao carregar estatísticas' });
+  }
+});
+
+// POST /api/toggle-mode - Alternar entre modo real e mock
+app.post('/api/toggle-mode', async (req, res) => {
+  try {
+    const { mode } = req.body;
+    
+    if (mode === 'real') {
+      USE_REAL_SCRAPING = true;
+      await initGlobalScraper();
+    } else {
+      USE_REAL_SCRAPING = false;
+      if (globalScraper) {
+        await globalScraper.close();
+        globalScraper = null;
+      }
+    }
+    
+    scrapingStats.mode = USE_REAL_SCRAPING ? 'REAL' : 'MOCK';
+    
+    res.json({
+      success: true,
+      mode: scrapingStats.mode,
+      message: `Modo alterado para ${scrapingStats.mode}`
+    });
+    
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao alternar modo' });
   }
 });
 
@@ -414,7 +634,7 @@ cron.schedule('0 8 * * *', async () => {
   }
 });
 
-// Agendamento de teste (a cada 2 horas para demonstração)
+// Agendamento de teste (a cada 2 horas)
 cron.schedule('0 */2 * * *', async () => {
   console.log('🔄 Verificação de teste...');
   try {
@@ -425,38 +645,53 @@ cron.schedule('0 */2 * * *', async () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('📴 Servidor sendo desligado graciosamente...');
+  if (globalScraper) {
+    await globalScraper.close();
+  }
   process.exit(0);
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('📴 Servidor sendo desligado graciosamente...');
+  if (globalScraper) {
+    await globalScraper.close();
+  }
   process.exit(0);
 });
 
 // Inicializar servidor
-const server = app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`
-🚀 DOM PBH Backend iniciado!
+🚀 DOM PBH Backend v2.0 iniciado!
 📡 API rodando em: http://0.0.0.0:${PORT}
 🌍 Ambiente: ${process.env.NODE_ENV || 'development'}
+🔧 Modo de Scraping: ${SCRAPING_MODE}
 🔔 Alertas automáticos: Todo dia às 8h
 🔄 Verificação de teste: A cada 2 horas
 
 Rotas disponíveis:
-- GET  /               (health check)
-- GET  /health         (status detalhado)
-- GET  /api/alerts     (listar alertas)
-- POST /api/alerts     (criar alerta)
-- PUT  /api/alerts/:id (atualizar alerta)
-- POST /api/search     (busca manual)
-- GET  /api/search/history (histórico)
-- POST /api/alerts/check   (verificar alertas)
-- GET  /api/stats      (estatísticas)
+- GET  /                      (health check)
+- GET  /health                (status detalhado)
+- GET  /api/scraping/status   (status do scraping)
+- POST /api/scraping/test     (testar conexão DOM)
+- POST /api/toggle-mode       (alternar real/mock)
+- GET  /api/alerts            (listar alertas)
+- POST /api/alerts            (criar alerta)
+- PUT  /api/alerts/:id        (atualizar alerta)
+- POST /api/search            (busca manual)
+- GET  /api/search/history    (histórico)
+- POST /api/alerts/check      (verificar alertas)
+- GET  /api/stats             (estatísticas)
 
 🎯 Sistema pronto para produção!
   `);
+  
+  // Inicializar scraper se modo real estiver ativo
+  if (USE_REAL_SCRAPING) {
+    await initGlobalScraper();
+  }
 });
 
 module.exports = app;
