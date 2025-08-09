@@ -6,15 +6,12 @@ const cron = require('node-cron');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
+// Middleware - CORS CORRIGIDO
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'http://localhost:3001', 
-    'https://dom-pbh-frontend.vercel.app',
-    'https://*.vercel.app'
-  ],
-  credentials: true
+  origin: '*',  // Aceita todas as origens temporariamente
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'X-Requested-With', 'Accept']
 }));
 app.use(express.json());
 
