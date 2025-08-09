@@ -1,36 +1,26 @@
-# nixpacks.toml - Configuração para Railway com suporte ao Puppeteer
+# nixpacks.toml - Configuração para Railway com Puppeteer
 
 [phases.setup]
+# Instalar Chromium via nixpkgs
 nixPkgs = [
   "chromium",
   "nodejs-18_x"
 ]
 
-aptPkgs = [
-  "libnss3",
-  "libatk1.0-0",
-  "libatk-bridge2.0-0",
-  "libcups2",
-  "libdrm2",
-  "libxkbcommon0",
-  "libxcomposite1",
-  "libxdamage1",
-  "libxfixes3",
-  "libxrandr2",
-  "libgbm1",
-  "libasound2"
-]
-
 [phases.install]
-cmds = ["npm install"]
+# Instalar dependências do Node
+cmds = ["npm install --omit=dev"]
 
 [phases.build]
-cmds = ["echo 'Build concluído'"]
+# Build concluído
+cmds = ["echo 'Build complete'"]
 
 [start]
+# Iniciar servidor
 cmd = "npm start"
 
 [variables]
+# Variáveis de ambiente
 USE_REAL_SCRAPING = "false"
-PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "false"
-PUPPETEER_EXECUTABLE_PATH = "/usr/bin/chromium"
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+PUPPETEER_EXECUTABLE_PATH = "/nix/store/chromium/bin/chromium"
