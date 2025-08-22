@@ -340,12 +340,15 @@ class DOMPBHScraper {
   extractNomeacaoData(content, result) {
     const movements = [];
     
+    // Limpar conteúdo HTML para trabalhar apenas com texto
+    const cleanContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    
     // Padrão aprimorado para exonerações - captura linha completa
     // Formato: "Exonera Ariadna Miranda Valério Andrade, BM-324.917-2, do cargo em comissão DAM 3, código nº SMDE.DAM3.A.009"
-    const exoneracaoPattern = /Exonera\s+([A-ZÁÉÍÓÚÃÕÊÇ][^,]+),\s*(?:BM-([\d\.-]+),?\s*)?do\s+cargo\s+(?:em\s+comissão\s+)?(.+?)(?:,\s+código\s+nº\s+([A-Z0-9\.]+))?(?=\n|$)/gi;
+    const exoneracaoPattern = /Exonera\s+([A-ZÁÉÍÓÚÃÕÊÇ][^,]+),\s*(?:BM-([\d\.-]+),?\s*)?do\s+cargo\s+(?:em\s+comissão\s+)?([^,]+?)(?:,\s+código\s+nº\s+([A-Z0-9\.]+))?(?=\s|$|\.|Exonera|Nomear)/gi;
     
     let match;
-    while ((match = exoneracaoPattern.exec(content)) !== null) {
+    while ((match = exoneracaoPattern.exec(cleanContent)) !== null) {
       movements.push({
         type: 'exoneração',
         person: match[1].trim(),
@@ -357,9 +360,9 @@ class DOMPBHScraper {
 
     // Padrão aprimorado para nomeações com matrícula
     // Formato: "Nomear João Silva Santos, BM-123.456-7, para o cargo de Coordenador Técnico, código nº COORD.TEC.001"
-    const nomeacaoPattern = /Nomear\s+([A-ZÁÉÍÓÚÃÕÊÇ][^,]+),\s*(?:BM-([\d\.-]+),?\s*)?(?:para|no|na)\s+(?:o\s+)?cargo\s+(?:de\s+)?(.+?)(?:,\s+código\s+nº\s+([A-Z0-9\.]+))?(?=\n|$)/gi;
+    const nomeacaoPattern = /Nomear\s+([A-ZÁÉÍÓÚÃÕÊÇ][^,]+),\s*(?:BM-([\d\.-]+),?\s*)?(?:para|no|na)\s+(?:o\s+)?cargo\s+(?:de\s+|em\s+comissão\s+)?([^,]+?)(?:,\s+código\s+nº\s+([A-Z0-9\.]+))?(?=\s|$|\.|Exonera|Nomear)/gi;
     
-    while ((match = nomeacaoPattern.exec(content)) !== null) {
+    while ((match = nomeacaoPattern.exec(cleanContent)) !== null) {
       movements.push({
         type: 'nomeação',
         person: match[1].trim(),
@@ -370,9 +373,9 @@ class DOMPBHScraper {
     }
 
     // Padrão para nomeações simples (sem matrícula na linha principal)
-    const nomeacaoSimplePattern = /Nomear\s+([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç\s]+?)\s+para\s+o\s+cargo\s+de\s+([^\n\r]+?)(?=\n|$)/gi;
+    const nomeacaoSimplePattern = /Nomear\s+([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç\s]+?)\s+para\s+o\s+cargo\s+de\s+([^\.]+?)(?=\s|$|\.|Exonera|Nomear)/gi;
     
-    while ((match = nomeacaoSimplePattern.exec(content)) !== null) {
+    while ((match = nomeacaoSimplePattern.exec(cleanContent)) !== null) {
       const person = match[1].trim();
       const fullPosition = match[2].trim();
       

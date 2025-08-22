@@ -93,15 +93,116 @@ async function performSearch(keyword, date, type) {
 }
 
 function generateSearchSummary(results, keyword) {
-    // ... (código da função generateSearchSummary sem alterações)
-  if (results.length === 0) { return `Nenhum resultado encontrado para "${keyword || 'busca'}" no Diário Oficial Municipal.`; }
+  if (results.length === 0) { 
+    return `Nenhum resultado encontrado para "${keyword || 'busca'}" no Diário Oficial Municipal.`; 
+  }
+  
   const byType = {};
-  results.forEach(r => { byType[r.type] = (byType[r.type] || 0) + 1; });
-  let summary = `Foram encontrados ${results.length} resultado${results.length > 1 ? 's' : ''}`;
+  const byCategory = {};
+  let totalMovements = 0;
+  let movementDetails = {
+    nomeacoes: 0,
+    exoneracoes: 0,
+    withMatricula: 0,
+    withCode: 0
+  };
+
+  results.forEach(r => { 
+    byType[r.type] = (byType[r.type] || 0) + 1; 
+    byCategory[r.category] = (byCategory[r.category] || 0) + 1;
+    
+    // Contar movimentos de pessoal detalhados
+    if (r.movements && r.movements.length > 0) {
+      totalMovements += r.movements.length;
+      r.movements.forEach(movement => {
+        if (movement.type === 'nomeação') movementDetails.nomeacoes++;
+        if (movement.type === 'exoneração') movementDetails.exoneracoes++;
+        if (movement.matricula) movementDetails.withMatricula++;
+        if (movement.code) movementDetails.withCode++;
+      });
+    }
+  });
+  
+  let summary = `Foram encontrados ${results.length} documento${results.length > 1 ? 's' : ''}`;
   if (keyword) { summary += ` para "${keyword}"`; }
   summary += '.\n\n';
-  Object.entries(byType).forEach(([tipo, count]) => { summary += `- ${tipo}: ${count} ocorrência(s)\n`; });
+  
+  // Resumo por tipo
+  summary += '📊 **Distribuição por tipo:**\n';
+  Object.entries(byType).forEach(([tipo, count]) => { 
+    summary += `- ${tipo}: ${count} documento${count > 1 ? 's' : ''}\n`; 
+  });
+  
+  // Se houver movimentos de pessoal, detalhar
+  if (totalMovements > 0) {
+    summary += '\n👥 **Movimentos de Pessoal:**\n';
+    summary += `- Total de movimentos: ${totalMovements}\n`;
+    if (movementDetails.nomeacoes > 0) {
+      summary += `- Nomeações: ${movementDetails.nomeacoes}\n`;
+    }
+    if (movementDetails.exoneracoes > 0) {
+      summary += `- Exonerações: ${movementDetails.exoneracoes}\n`;
+    }
+    if (movementDetails.withMatricula > 0) {
+      summary += `- Com matrícula BM: ${movementDetails.withMatricula}\n`;
+    }
+    if (movementDetails.withCode > 0) {
+      summary += `- Com código do cargo: ${movementDetails.withCode}\n`;
+    }
+  }
+  
   return summary.trim();
+}
+
+// Inicializar scraper global
+async function initGlobalScraper() {
+  try {
+    console.log('🚀 Inicializando scraper global...');
+    globalScraper = new DOMPBHScraper();
+    await globalScraper.init();
+    console.log('✅ Scraper global inicializado com sucesso');
+  } catch (error) {
+    console.error('❌ Erro ao inicializar scraper global:', error);
+    globalScraper = null;
+  }
+}
+
+// Verificar alertas (função para cron job)
+async function checkAlerts() {
+  try {
+    if (!USE_REAL_SCRAPING || !globalScraper) {
+      console.log('📊 Modo mock - simulando verificação de alertas');
+      return [];
+    }
+    
+    console.log('🔔 Verificando alertas ativos...');
+    const activeAlerts = alerts.filter(a => a.active);
+    const results = [];
+    
+    for (const alert of activeAlerts) {
+      try {
+        const searchResults = await globalScraper.searchByKeyword(alert.keyword);
+        if (searchResults.length > 0) {
+          results.push({
+            alertId: alert.id,
+            keyword: alert.keyword,
+            newResults: searchResults.length,
+            results: searchResults
+          });
+          alert.lastCheck = new Date().toISOString();
+          alert.results = searchResults;
+        }
+      } catch (error) {
+        console.error(`❌ Erro ao verificar alerta "${alert.keyword}":`, error);
+      }
+    }
+    
+    console.log(`✅ ${results.length} alertas com novos resultados`);
+    return results;
+  } catch (error) {
+    console.error('❌ Erro na verificação de alertas:', error);
+    return [];
+  }
 }
 
 // --- ROTAS DA API ---
@@ -110,12 +211,107 @@ function generateSearchSummary(results, keyword) {
 // ... (rotas de /api/alerts, /api/search, /api/stats, /api/toggle-mode)
 
 app.get('/', (req, res) => { res.json({ status: 'online', message: 'DOM PBH Backend API', version: '2.1.0', scrapingMode: SCRAPING_MODE }); });
+
+// GET /api/alerts - Listar alertas
 app.get('/api/alerts', (req, res) => { res.json(alerts); });
+
+// POST /api/search - Buscar publicações
 app.post('/api/search', async (req, res) => {
+  try {
     const { keyword, date, type } = req.body;
     const results = await performSearch(keyword, date, type);
     const summary = generateSearchSummary(results, keyword);
-    res.json({ success: true, results, total: results.length, mode: SCRAPING_MODE, summary });
+    
+    // Adicionar estatísticas de movimento para nomeações
+    let movementStats = null;
+    if (results.some(r => r.category === 'nomeacao' && r.movements)) {
+      const allMovements = results.flatMap(r => r.movements || []);
+      movementStats = {
+        total: allMovements.length,
+        nomeacoes: allMovements.filter(m => m.type === 'nomeação').length,
+        exoneracoes: allMovements.filter(m => m.type === 'exoneração').length,
+        withMatricula: allMovements.filter(m => m.matricula).length,
+        withCode: allMovements.filter(m => m.code).length
+      };
+    }
+    
+    res.json({ 
+      success: true, 
+      results, 
+      total: results.length, 
+      mode: SCRAPING_MODE, 
+      summary,
+      movementStats 
+    });
+  } catch (error) {
+    console.error('❌ Erro na busca:', error);
+    res.status(500).json({ success: false, error: 'Erro interno na busca' });
+  }
+});
+
+// GET /api/stats - Estatísticas do sistema
+app.get('/api/stats', (req, res) => {
+  res.json(scrapingStats);
+});
+
+// POST /api/alerts - Criar novo alerta
+app.post('/api/alerts', (req, res) => {
+  try {
+    const { keyword, active = true } = req.body;
+    if (!keyword) {
+      return res.status(400).json({ error: 'Keyword é obrigatória' });
+    }
+    
+    const newAlert = {
+      id: alerts.length + 1,
+      keyword: keyword.toLowerCase(),
+      active,
+      lastCheck: new Date().toISOString(),
+      results: []
+    };
+    
+    alerts.push(newAlert);
+    res.json({ success: true, alert: newAlert });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao criar alerta' });
+  }
+});
+
+// PUT /api/alerts/:id - Atualizar alerta
+app.put('/api/alerts/:id', (req, res) => {
+  try {
+    const alertId = parseInt(req.params.id);
+    const { keyword, active } = req.body;
+    
+    const alert = alerts.find(a => a.id === alertId);
+    if (!alert) {
+      return res.status(404).json({ error: 'Alerta não encontrado' });
+    }
+    
+    if (keyword !== undefined) alert.keyword = keyword.toLowerCase();
+    if (active !== undefined) alert.active = active;
+    
+    res.json({ success: true, alert });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao atualizar alerta' });
+  }
+});
+
+// DELETE /api/alerts/:id - Deletar alerta
+app.delete('/api/alerts/:id', (req, res) => {
+  try {
+    const alertId = parseInt(req.params.id);
+    const alertIndex = alerts.findIndex(a => a.id === alertId);
+    
+    if (alertIndex === -1) {
+      return res.status(404).json({ error: 'Alerta não encontrado' });
+    }
+    
+    alerts.splice(alertIndex, 1);
+    res.json({ success: true, message: 'Alerta removido' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao deletar alerta' });
+  }
 });
 // ... (e todas as outras rotas que você já tem)
 
