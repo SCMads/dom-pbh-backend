@@ -178,20 +178,156 @@ class DOMPBHScraper {
     }
   }
 
+  // Enhanced personnel movement extraction algorithm
+  extractPersonnelMovement(texto) {
+    const movementResult = {
+      hasMovement: false,
+      isAppointment: false,
+      isDismissal: false,
+      movements: [],
+      debugInfo: []
+    };
+
+    // Enhanced patterns for better name and movement extraction
+    const patterns = {
+      appointment: [
+        // NOMEAR patterns - more comprehensive with accent support
+        /nomear\s+([A-ZÁÊÍÓÚÀÂÃÕÇÉÜÏ][A-Za-záêíóúàâãõçéüï\s]+?)(?:\s+para\s+(?:exercer\s+)?(?:o\s+cargo|a\s+função)|,|\.|\s+na\s+|$)/gi,
+        // DESIGNAR patterns - more flexible with accent support
+        /designar\s+([A-ZÁÊÍÓÚÀÂÃÕÇÉÜÏ][A-Za-záêíóúàâãõçéüï\s]+?)(?:\s+para|,|\.|\s+na\s+|$)/gi,
+        // CONTRATAR patterns with accent support
+        /contratar\s+([A-ZÁÊÍÓÚÀÂÃÕÇÉÜÏ][A-Za-záêíóúàâãõçéüï\s]+?)(?:\s+para\s+(?:o\s+cargo|a\s+função)|,|\.|\s+na\s+|$)/gi
+      ],
+      dismissal: [
+        // EXONERAR patterns with accent support
+        /exonerar\s+([A-ZÁÊÍÓÚÀÂÃÕÇÉÜÏ][A-Za-záêíóúàâãõçéüï\s]+?)(?:\s+do\s+cargo|,|\.|\s+da\s+função|$)/gi,
+        // DISPENSAR patterns with accent support
+        /dispensar\s+([A-ZÁÊÍÓÚÀÂÃÕÇÉÜÏ][A-Za-záêíóúàâãõçéüï\s]+?)(?:\s+do\s+cargo|,|\.|\s+da\s+função|$)/gi,
+        // DEMITIR patterns with accent support
+        /demitir\s+([A-ZÁÊÍÓÚÀÂÃÕÇÉÜÏ][A-Za-záêíóúàâãõçéüï\s]+?)(?:\s+do\s+cargo|,|\.|\s+da\s+função|$)/gi
+      ]
+    };
+
+    // Position/role extraction patterns
+    const positionPatterns = [
+      /(?:cargo|função)(?:\s+comissionada|\s+efetiva|\s+efetivo)?\s+de\s+([^,\.]+)/gi,
+      /para\s+(?:exercer\s+)?(?:o\s+cargo|a\s+função)(?:\s+comissionada|\s+efetiva|\s+efetivo)?\s+de\s+([^,\.]+)/gi,
+      /como\s+([^,\.]+)/gi,
+      /na\s+(?:condição|qualidade)\s+de\s+([^,\.]+)/gi
+    ];
+
+    // Organ/department extraction patterns
+    const organPatterns = [
+      /(?:secretaria\s+municipal\s+de\s+|secretaria\s+)([^,\.]+)/gi,
+      /(?:na\s+|da\s+)secretaria\s+([^,\.]+)/gi,
+      /órgão\s+([^,\.]+)/gi
+    ];
+
+    // Analyze text in paragraphs for better context
+    const paragraphs = texto.split(/\n\s*\n/);
+    
+    paragraphs.forEach((paragraph, pIndex) => {
+      movementResult.debugInfo.push(`Analisando parágrafo ${pIndex + 1}: ${paragraph.substring(0, 100)}...`);
+      
+      // Check for appointments
+      Object.entries(patterns).forEach(([type, regexList]) => {
+        regexList.forEach((regex, rIndex) => {
+          // Reset regex lastIndex to avoid issues with global flag
+          regex.lastIndex = 0;
+          let match;
+          
+          while ((match = regex.exec(paragraph)) !== null) {
+            let name = match[1].trim();
+            
+            // Clean up name - remove common non-name words that might be captured, but preserve prepositions in names
+            name = name.replace(/\s+(para|do|e|a|o)(\s|$)/gi, '').trim();
+            // Be more careful with "da", "de", "dos", "das" as they can be part of Brazilian names
+            name = name.replace(/\s+(para)(\s|$)/gi, '').trim();
+            
+            // Validate name - should have at least 2 words and reasonable length
+            if (name.length > 3 && name.split(/\s+/).length >= 2 && name.length < 100) {
+              
+              // Extract position/role from context
+              let position = '';
+              let organ = '';
+              
+              // Look for position in the same paragraph
+              positionPatterns.forEach(posPattern => {
+                posPattern.lastIndex = 0;
+                const posMatch = posPattern.exec(paragraph);
+                if (posMatch && !position) {
+                  position = posMatch[1].trim();
+                }
+              });
+              
+              // Look for organ/department
+              organPatterns.forEach(orgPattern => {
+                orgPattern.lastIndex = 0;
+                const orgMatch = orgPattern.exec(paragraph);
+                if (orgMatch && !organ) {
+                  organ = orgMatch[1].trim();
+                }
+              });
+              
+              const movement = {
+                type: type,
+                name: name,
+                position: position,
+                organ: organ,
+                context: paragraph.substring(Math.max(0, match.index - 100), match.index + 200),
+                patternIndex: rIndex,
+                matchPosition: match.index
+              };
+              
+              movementResult.movements.push(movement);
+              movementResult.hasMovement = true;
+              
+              if (type === 'appointment') {
+                movementResult.isAppointment = true;
+              } else if (type === 'dismissal') {
+                movementResult.isDismissal = true;
+              }
+              
+              movementResult.debugInfo.push(`Encontrado ${type}: ${name} - ${position || 'sem cargo'} - ${organ || 'sem órgão'}`);
+            }
+          }
+        });
+      });
+    });
+
+    // Log debug info for troubleshooting
+    if (movementResult.movements.length > 0) {
+      console.log(`🔍 Extração encontrou ${movementResult.movements.length} movimentação(ões):`);
+      movementResult.movements.forEach((mov, i) => {
+        console.log(`  ${i+1}. ${mov.type}: ${mov.name} -> ${mov.position || 'N/A'}`);
+      });
+    }
+
+    return movementResult;
+  }
+
   // Processar e categorizar resultado
   processResult(item, keyword) {
     const content = item.content.toLowerCase();
+    const originalContent = item.content; // Keep original for better extraction
     const title = item.title;
     
-    // Detectar tipo de publicação
+    // Enhanced personnel movement detection with detailed logging
+    const movementResult = this.extractPersonnelMovement(originalContent);
+    
+    // Detectar tipo de publicação com prioridade para movimentação de pessoal
     let type = 'Publicação';
     let category = 'geral';
     
-    // Nomeações
-    if (content.includes('nomear') || content.includes('nomeação') || 
-        content.includes('designar') || content.includes('exonerar')) {
-      type = 'Nomeação';
-      category = 'nomeacao';
+    // Personnel movements (nomeações/exonerações) have priority
+    if (movementResult.hasMovement) {
+      if (movementResult.isAppointment) {
+        type = 'Nomeação';
+        category = 'nomeacao';
+      } else if (movementResult.isDismissal) {
+        type = 'Exoneração';
+        category = 'exoneracao';
+      }
     }
     // Contratos
     else if (content.includes('contrato') || content.includes('aditivo') || 
@@ -205,12 +341,12 @@ class DOMPBHScraper {
       type = 'Licitação';
       category = 'licitacao';
     }
-    // Decretos
+    // Decretos - only if no personnel movement detected
     else if (content.includes('decreto') || title.includes('DECRETO')) {
       type = 'Decreto';
       category = 'decreto';
     }
-    // Portarias
+    // Portarias - only if no personnel movement detected
     else if (content.includes('portaria') || title.includes('PORTARIA')) {
       type = 'Portaria';
       category = 'portaria';
@@ -230,25 +366,21 @@ class DOMPBHScraper {
     };
 
     // Extrair dados específicos por tipo
-    if (category === 'nomeacao') {
-      // Tentar extrair nome da pessoa
-      const nomeMatch = content.match(/nomear\s+([A-ZÁÊÕÇ][a-záêõç]+(?:\s+[A-ZÁÊÕÇ][a-záêõç]+)*)/i);
-      if (nomeMatch) {
-        processedResult.person = nomeMatch[1];
-      }
-      
-      // Tentar extrair cargo
-      const cargoMatch = content.match(/cargo\s+de\s+([^,\.]+)/i) || 
-                        content.match(/função\s+de\s+([^,\.]+)/i);
-      if (cargoMatch) {
-        processedResult.position = cargoMatch[1].trim();
-      }
-      
-      // Tentar extrair órgão
-      const orgaoMatch = content.match(/secretaria\s+([^,\.]+)/i) || 
-                        content.match(/órgão\s+([^,\.]+)/i);
-      if (orgaoMatch) {
-        processedResult.organ = orgaoMatch[1].trim();
+    if (category === 'nomeacao' || category === 'exoneracao') {
+      // Use enhanced personnel movement extraction
+      if (movementResult.movements.length > 0) {
+        // Take the first (most relevant) movement found
+        const movement = movementResult.movements[0];
+        processedResult.person = movement.name;
+        processedResult.position = movement.position;
+        processedResult.organ = movement.organ;
+        processedResult.extractionContext = movement.context;
+        
+        // Add debug info for validation
+        processedResult.extractionDebug = {
+          movementsFound: movementResult.movements.length,
+          debugInfo: movementResult.debugInfo
+        };
       }
     }
     
