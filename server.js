@@ -93,14 +93,53 @@ async function performSearch(keyword, date, type) {
 }
 
 function generateSearchSummary(results, keyword) {
-    // ... (código da função generateSearchSummary sem alterações)
-  if (results.length === 0) { return `Nenhum resultado encontrado para "${keyword || 'busca'}" no Diário Oficial Municipal.`; }
+  if (results.length === 0) { 
+    return `Nenhum resultado encontrado para "${keyword || 'busca'}" no Diário Oficial Municipal.`; 
+  }
+  
   const byType = {};
-  results.forEach(r => { byType[r.type] = (byType[r.type] || 0) + 1; });
+  const personnelStats = {
+    nomeacoes: 0,
+    exoneracoes: 0,
+    namesExtracted: 0,
+    positionsExtracted: 0
+  };
+  
+  results.forEach(r => { 
+    byType[r.type] = (byType[r.type] || 0) + 1;
+    
+    // Track personnel movement statistics
+    if (r.category === 'nomeacao') {
+      personnelStats.nomeacoes++;
+      if (r.person) personnelStats.namesExtracted++;
+      if (r.position) personnelStats.positionsExtracted++;
+    } else if (r.category === 'exoneracao') {
+      personnelStats.exoneracoes++;
+      if (r.person) personnelStats.namesExtracted++;
+      if (r.position) personnelStats.positionsExtracted++;
+    }
+  });
+  
   let summary = `Foram encontrados ${results.length} resultado${results.length > 1 ? 's' : ''}`;
   if (keyword) { summary += ` para "${keyword}"`; }
   summary += '.\n\n';
-  Object.entries(byType).forEach(([tipo, count]) => { summary += `- ${tipo}: ${count} ocorrência(s)\n`; });
+  
+  // Add detailed breakdown by type
+  Object.entries(byType).forEach(([tipo, count]) => { 
+    summary += `- ${tipo}: ${count} ocorrência(s)\n`; 
+  });
+  
+  // Add personnel movement statistics if relevant
+  const totalPersonnelMovements = personnelStats.nomeacoes + personnelStats.exoneracoes;
+  if (totalPersonnelMovements > 0) {
+    summary += `\n📊 MOVIMENTAÇÃO DE PESSOAL:\n`;
+    summary += `- Nomeações: ${personnelStats.nomeacoes}\n`;
+    summary += `- Exonerações: ${personnelStats.exoneracoes}\n`;
+    summary += `- Nomes extraídos: ${personnelStats.namesExtracted}/${totalPersonnelMovements}\n`;
+    summary += `- Cargos extraídos: ${personnelStats.positionsExtracted}/${totalPersonnelMovements}\n`;
+    summary += `- Taxa de extração: ${Math.round((personnelStats.namesExtracted/totalPersonnelMovements) * 100)}%\n`;
+  }
+  
   return summary.trim();
 }
 
@@ -111,6 +150,49 @@ function generateSearchSummary(results, keyword) {
 
 app.get('/', (req, res) => { res.json({ status: 'online', message: 'DOM PBH Backend API', version: '2.1.0', scrapingMode: SCRAPING_MODE }); });
 app.get('/api/alerts', (req, res) => { res.json(alerts); });
+
+// New route for testing enhanced personnel extraction
+app.post('/api/test-extraction', (req, res) => {
+  try {
+    const { text } = req.body;
+    
+    if (!text) {
+      return res.status(400).json({ error: 'Texto é obrigatório' });
+    }
+    
+    // Use the enhanced extraction algorithm
+    if (globalScraper) {
+      const movementResult = globalScraper.extractPersonnelMovement(text);
+      
+      // Create a mock item to test the full processResult method
+      const mockItem = {
+        title: 'Teste de Extração',
+        content: text,
+        url: 'http://test.com'
+      };
+      
+      const processedResult = globalScraper.processResult(mockItem, null);
+      
+      res.json({
+        success: true,
+        extractionDetails: movementResult,
+        processedResult: processedResult,
+        statistics: {
+          movementsFound: movementResult.movements.length,
+          hasAppointments: movementResult.isAppointment,
+          hasDismissals: movementResult.isDismissal,
+          extractionSuccess: movementResult.movements.length > 0
+        }
+      });
+    } else {
+      res.status(503).json({ error: 'Scraper não inicializado' });
+    }
+  } catch (error) {
+    console.error('Erro no teste de extração:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
 app.post('/api/search', async (req, res) => {
     const { keyword, date, type } = req.body;
     const results = await performSearch(keyword, date, type);
