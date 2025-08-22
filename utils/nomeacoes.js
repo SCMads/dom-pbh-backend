@@ -64,9 +64,16 @@ function extrairNome(match) {
   let nome = match
     .replace(/^(nomear|designar|admitir|contratar|exonerar|dispensar|demitir)\s+/i, '')
     .replace(/^(a\s+)?(servidora?|funcionária?|pessoa)\s+/i, '')
-    .replace(/\s+(para|no|na|como|do|da|de)\s+.*/i, '')
     .replace(/\s*,.*$/, '') // Remove tudo após vírgula
     .trim();
+  
+  // Se ainda contém "para", "do", etc, remover apenas se não parecer parte do nome
+  if (/\s+(para|no|na|como|do|da|de)\s+/.test(nome)) {
+    const parts = nome.split(/\s+(para|no|na|como|do|da|de)\s+/i);
+    if (parts[0] && parts[0].trim().length > 0) {
+      nome = parts[0].trim();
+    }
+  }
   
   return validarNomeReal(nome) ? nome : null;
 }
