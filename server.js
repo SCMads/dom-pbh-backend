@@ -209,8 +209,12 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     await initGlobalScraper();
   }
   
-  // Inicializar serviço de email
-  await emailService.initialize();
+  // Inicializar serviço de email (apenas se em produção)
+  try {
+    await emailService.initialize();
+  } catch (error) {
+    console.log('⚠️ Serviço de email não inicializado (modo desenvolvimento)');
+  }
 });
 
 module.exports = app;
