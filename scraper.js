@@ -1,5 +1,6 @@
 // scraper.js - Web Scraping Real do DOM PBH
 const puppeteer = require('puppeteer');
+const { validarNomeReal, extrairNome, extrairCargo, extrairMatricula } = require('./utils/nomeacoes');
 
 class DOMPBHScraper {
   constructor() {
@@ -161,13 +162,33 @@ class DOMPBHScraper {
       // Primeiro, buscar todas as publicações da data
       const allResults = await this.searchByDate(date);
       
-      // Filtrar e processar resultados
-      const filteredResults = allResults
+      // Filtrar especificamente documentos que podem conter nomeações/exonerações
+      const documentosNomeacao = allResults.filter(item => {
+        const searchText = `${item.title} ${item.content}`.toLowerCase();
+        return searchText.includes('ato de nomeação') || 
+               searchText.includes('convocação para posse') ||
+               searchText.includes('nomear') ||
+               searchText.includes('exonerar') ||
+               searchText.includes('nomeação') ||
+               searchText.includes('exoneração') ||
+               searchText.includes('designar') ||
+               searchText.includes('dispensar') ||
+               searchText.includes('demitir');
+      });
+
+      console.log(`📋 ${documentosNomeacao.length} documentos de nomeação/exoneração encontrados`);
+      
+      // Filtrar por palavra-chave e processar resultados
+      const filteredResults = documentosNomeacao
         .filter(item => {
           const searchText = `${item.title} ${item.content}`.toLowerCase();
           return searchText.includes(keyword.toLowerCase());
         })
-        .map(item => this.processResult(item, keyword));
+        .map(item => {
+          console.log(`🔍 Analisando documento: ${item.title}`);
+          console.log(`📝 Conteúdo (primeiros 200 chars): ${item.content.substring(0, 200)}`);
+          return this.processResult(item, keyword);
+        });
 
       console.log(`✅ ${filteredResults.length} resultados encontrados para "${keyword}"`);
       return filteredResults;
@@ -181,16 +202,22 @@ class DOMPBHScraper {
   // Processar e categorizar resultado
   processResult(item, keyword) {
     const content = item.content.toLowerCase();
+    const originalContent = item.content; // Keep original case for better extraction
     const title = item.title;
     
     // Detectar tipo de publicação
     let type = 'Publicação';
     let category = 'geral';
     
-    // Nomeações
-    if (content.includes('nomear') || content.includes('nomeação') || 
-        content.includes('designar') || content.includes('exonerar')) {
-      type = 'Nomeação';
+    // Detectar se é nomeação ou exoneração
+    const isNomeacao = content.includes('nomear') || content.includes('nomeação') || 
+                      content.includes('designar') || title.toLowerCase().includes('ato de nomeação');
+    const isExoneracao = content.includes('exonerar') || content.includes('exoneração') ||
+                        content.includes('dispensar') || content.includes('demitir');
+    
+    // Nomeações e Exonerações
+    if (isNomeacao || isExoneracao) {
+      type = isExoneracao ? 'Exoneração' : 'Nomeação';
       category = 'nomeacao';
     }
     // Contratos
@@ -231,25 +258,7 @@ class DOMPBHScraper {
 
     // Extrair dados específicos por tipo
     if (category === 'nomeacao') {
-      // Tentar extrair nome da pessoa
-      const nomeMatch = content.match(/nomear\s+([A-ZÁÊÕÇ][a-záêõç]+(?:\s+[A-ZÁÊÕÇ][a-záêõç]+)*)/i);
-      if (nomeMatch) {
-        processedResult.person = nomeMatch[1];
-      }
-      
-      // Tentar extrair cargo
-      const cargoMatch = content.match(/cargo\s+de\s+([^,\.]+)/i) || 
-                        content.match(/função\s+de\s+([^,\.]+)/i);
-      if (cargoMatch) {
-        processedResult.position = cargoMatch[1].trim();
-      }
-      
-      // Tentar extrair órgão
-      const orgaoMatch = content.match(/secretaria\s+([^,\.]+)/i) || 
-                        content.match(/órgão\s+([^,\.]+)/i);
-      if (orgaoMatch) {
-        processedResult.organ = orgaoMatch[1].trim();
-      }
+      this.extractNominationData(originalContent, processedResult, isExoneracao);
     }
     
     else if (category === 'contrato') {
@@ -304,6 +313,79 @@ class DOMPBHScraper {
     }
 
     return processedResult;
+  }
+
+  // Extract nomination/dismissal specific data
+  extractNominationData(content, result, isExoneracao) {
+    // Padrões mais específicos para documentos oficiais brasileiros
+    const padroesNomeacao = [
+      /(?:nomear|designar|admitir|contratar)\s+(?:a\s+(?:servidora?|funcionária?|pessoa)\s+)?([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})(?:\s+para)/gi,
+      /art\.?\s*\d+[º°]?\s*[-–]\s*nomear\s+(?:a\s+)?([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})(?:\s+para)/gi,
+      /resolve:\s*nomear\s+(?:a\s+)?([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})(?:\s+para)/gi,
+      /nomear\s+([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})\s+para/gi
+    ];
+
+    const padroesExoneracao = [
+      /(?:exonerar|dispensar|demitir|desligar)\s+(?:a\s+(?:servidora?|funcionária?|pessoa)\s+)?([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})(?:\s+do|\s+da|\s+de)/gi,
+      /art\.?\s*\d+[º°]?\s*[-–]\s*exonerar\s+(?:a\s+)?([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})(?:\s+do|\s+da|\s+de)/gi,
+      /resolve:\s*exonerar\s+(?:a\s+)?([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})(?:\s+do|\s+da|\s+de)/gi,
+      /exonerar\s+([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+(?:\s+[A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç]+){1,5})\s+do/gi
+    ];
+
+    const padroes = isExoneracao ? padroesExoneracao : padroesNomeacao;
+    
+    console.log(`🎯 Processando ${isExoneracao ? 'exoneração' : 'nomeação'}...`);
+    
+    // Tentar extrair nomes usando os padrões melhorados
+    for (const padrao of padroes) {
+      const matches = [...content.matchAll(padrao)];
+      console.log(`📍 Padrão encontrou ${matches.length} matches`);
+      
+      for (const match of matches) {
+        if (match[1]) {
+          const nomeExtraido = extrairNome(match[1]);
+          if (nomeExtraido) {
+            console.log(`✅ Nome válido encontrado: ${nomeExtraido}`);
+            result.person = nomeExtraido;
+            
+            // Extrair cargo e matrícula do contexto
+            result.position = extrairCargo(content, nomeExtraido);
+            result.matricula = extrairMatricula(content, nomeExtraido);
+            
+            break; // Parar na primeira ocorrência válida
+          } else {
+            console.log(`❌ Nome inválido rejeitado: ${match[1]}`);
+          }
+        }
+      }
+      
+      if (result.person) break; // Se encontrou nome válido, parar de procurar
+    }
+    
+    // Se não encontrou nome com padrões específicos, tentar padrão geral
+    if (!result.person) {
+      console.log(`🔄 Tentando padrão geral...`);
+      const nomeMatch = content.match(/(?:nomear|exonerar|designar)\s+([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç\s]+?)(?:\s+para|\s*,|\s+do|\s+da)/i);
+      if (nomeMatch && nomeMatch[1]) {
+        const nomeExtraido = extrairNome(nomeMatch[1]);
+        if (nomeExtraido) {
+          console.log(`✅ Nome encontrado com padrão geral: ${nomeExtraido}`);
+          result.person = nomeExtraido;
+          result.position = extrairCargo(content, nomeExtraido);
+          result.matricula = extrairMatricula(content, nomeExtraido);
+        }
+      }
+    }
+    
+    // Tentar extrair órgão
+    const orgaoMatch = content.match(/secretaria\s+([^,\.]+)/i) || 
+                      content.match(/órgão\s+([^,\.]+)/i) ||
+                      content.match(/na\s+(secretaria[^,\.]+)/i);
+    if (orgaoMatch) {
+      result.organ = orgaoMatch[1].trim();
+    }
+
+    console.log(`🎯 Padrões encontrados: pessoa=${result.person || 'Não encontrada'}, cargo=${result.position || 'Não encontrado'}`);
   }
 
   // Buscar em modo avançado com formulário
