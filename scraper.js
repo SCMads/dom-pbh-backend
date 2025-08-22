@@ -69,78 +69,124 @@ class DOMPBHScraper {
         timeout: 60000 
       });
 
-      // Aguardar a página carregar completamente
-      await this.page.waitForTimeout(3000);
+      // Aguardar Vue.js carregar completamente
+      console.log('⏳ Aguardando Vue.js SPA carregar...');
+      
+      // Aguardar elementos Vue.js aparecerem
+      try {
+        await this.page.waitForSelector('[data-v-], .card-body, .vue-component', { 
+          timeout: 15000,
+          visible: true 
+        });
+        console.log('✅ Elementos Vue.js detectados');
+      } catch (e) {
+        console.log('⚠️ Elementos Vue.js não detectados, continuando...');
+      }
 
-      // Tentar diferentes seletores possíveis
+      // Aguardar network idle após carregamento inicial
+      await this.page.waitForLoadState?.('networkidle') || await this.page.waitForTimeout(5000);
+      
+      // Aguardar conteúdo de texto renderizar
+      await this.page.waitForFunction(
+        () => {
+          const body = document.body;
+          return body && body.innerText && body.innerText.length > 1000;
+        },
+        { timeout: 10000 }
+      ).catch(() => console.log('⚠️ Timeout esperando conteúdo de texto'));
+
+      console.log('✅ Página Vue.js carregada completamente');
+
+      // Extrair dados com foco em Vue.js e DOM PBH
       const results = await this.page.evaluate(() => {
         const items = [];
         
-        // Tentar coletar dados de diferentes estruturas possíveis
-        // Selector 1: Tabelas de publicações
+        // Prioridade 1: Card-body do Vue.js (conteúdo principal)
+        const cardBodies = document.querySelectorAll('.card-body, .card-content, [class*="card"]');
+        cardBodies.forEach(card => {
+          const content = card.innerText?.trim() || '';
+          if (content && content.length > 50) {
+            const title = card.querySelector('h1, h2, h3, h4, .titulo, .title, strong')?.innerText?.trim() || 
+                         content.substring(0, 100) + '...';
+            items.push({
+              title,
+              content,
+              html: card.innerHTML,
+              source: 'card-body'
+            });
+          }
+        });
+
+        // Prioridade 2: Elementos Vue.js com data-v-*
+        const vueElements = document.querySelectorAll('[data-v-]');
+        vueElements.forEach(element => {
+          const content = element.innerText?.trim() || '';
+          if (content && content.length > 50 && !items.some(item => item.content === content)) {
+            const title = element.querySelector('h1, h2, h3, h4, .titulo, .title, strong')?.innerText?.trim() || 
+                         content.substring(0, 100) + '...';
+            items.push({
+              title,
+              content,
+              html: element.innerHTML,
+              source: 'vue-element'
+            });
+          }
+        });
+
+        // Prioridade 3: Conteúdo de publicações específicas
+        const publicacoes = document.querySelectorAll('.publicacao, .noticia, .ato, .decreto, [class*="publicacao"], [class*="materia"]');
+        publicacoes.forEach(pub => {
+          const content = pub.innerText?.trim() || '';
+          if (content && content.length > 50 && !items.some(item => item.content === content)) {
+            const title = pub.querySelector('h1, h2, h3, h4, .titulo, .title, strong')?.innerText?.trim() || 
+                         content.substring(0, 100) + '...';
+            items.push({
+              title,
+              content,
+              html: pub.innerHTML,
+              source: 'publicacao'
+            });
+          }
+        });
+
+        // Prioridade 4: Tabelas tradicionais (fallback)
         const tables = document.querySelectorAll('table.table-publicacoes, table.resultados, table');
         tables.forEach(table => {
           const rows = table.querySelectorAll('tr');
           rows.forEach(row => {
             const cells = row.querySelectorAll('td');
             if (cells.length > 0) {
-              const title = cells[0]?.innerText?.trim() || '';
               const content = Array.from(cells).map(c => c.innerText?.trim()).join(' ');
-              if (title) {
+              if (content && content.length > 50 && !items.some(item => item.content === content)) {
+                const title = cells[0]?.innerText?.trim() || content.substring(0, 100) + '...';
                 items.push({
                   title,
                   content,
-                  html: row.innerHTML
+                  html: row.innerHTML,
+                  source: 'table'
                 });
               }
             }
           });
         });
 
-        // Selector 2: Divs de publicações
-        const divs = document.querySelectorAll('.publicacao, .noticia, .ato, .decreto, [class*="publicacao"]');
-        divs.forEach(div => {
-          const title = div.querySelector('h1, h2, h3, h4, .titulo, .title')?.innerText?.trim() || 
-                       div.querySelector('strong')?.innerText?.trim() || '';
-          const content = div.innerText?.trim() || '';
-          if (title || content) {
-            items.push({
-              title: title || content.substring(0, 100),
-              content,
-              html: div.innerHTML
-            });
-          }
-        });
-
-        // Selector 3: Artigos
-        const articles = document.querySelectorAll('article, .article, .materia');
-        articles.forEach(article => {
-          const title = article.querySelector('h1, h2, h3, .titulo')?.innerText?.trim() || '';
-          const content = article.innerText?.trim() || '';
-          if (title || content) {
-            items.push({
-              title: title || content.substring(0, 100),
-              content,
-              html: article.innerHTML
-            });
-          }
-        });
-
-        // Selector 4: Lista de links para PDFs
-        const links = document.querySelectorAll('a[href*=".pdf"], a[href*="download"], a[href*="anexo"]');
+        // Prioridade 5: Links para documentos (PDFs, etc.)
+        const links = document.querySelectorAll('a[href*=".pdf"], a[href*="download"], a[href*="anexo"], a[href*="visualizacao"]');
         links.forEach(link => {
           const text = link.innerText?.trim();
           const href = link.href;
-          if (text && href) {
+          if (text && href && text.length > 10) {
             items.push({
               title: text,
-              content: `Link para documento: ${href}`,
+              content: `Documento: ${text} - ${href}`,
               url: href,
-              type: 'document'
+              type: 'document',
+              source: 'link'
             });
           }
         });
 
+        console.log(`🔍 Coletados ${items.length} itens de diferentes fontes`);
         return items;
       });
 
@@ -181,15 +227,16 @@ class DOMPBHScraper {
   // Processar e categorizar resultado
   processResult(item, keyword) {
     const content = item.content.toLowerCase();
+    const originalContent = item.content; // Manter conteúdo original para extração
     const title = item.title;
     
     // Detectar tipo de publicação
     let type = 'Publicação';
     let category = 'geral';
     
-    // Nomeações
+    // Nomeações e Exonerações (prioridade alta)
     if (content.includes('nomear') || content.includes('nomeação') || 
-        content.includes('designar') || content.includes('exonerar')) {
+        content.includes('designar') || content.includes('exonerar') || content.includes('exoneração')) {
       type = 'Nomeação';
       category = 'nomeacao';
     }
@@ -226,30 +273,13 @@ class DOMPBHScraper {
       content: item.content.substring(0, 500) + (item.content.length > 500 ? '...' : ''),
       fullContent: item.content,
       url: item.url || null,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      source: item.source || 'unknown'
     };
 
-    // Extrair dados específicos por tipo
+    // Extrair dados específicos por tipo com padrões aprimorados
     if (category === 'nomeacao') {
-      // Tentar extrair nome da pessoa
-      const nomeMatch = content.match(/nomear\s+([A-ZÁÊÕÇ][a-záêõç]+(?:\s+[A-ZÁÊÕÇ][a-záêõç]+)*)/i);
-      if (nomeMatch) {
-        processedResult.person = nomeMatch[1];
-      }
-      
-      // Tentar extrair cargo
-      const cargoMatch = content.match(/cargo\s+de\s+([^,\.]+)/i) || 
-                        content.match(/função\s+de\s+([^,\.]+)/i);
-      if (cargoMatch) {
-        processedResult.position = cargoMatch[1].trim();
-      }
-      
-      // Tentar extrair órgão
-      const orgaoMatch = content.match(/secretaria\s+([^,\.]+)/i) || 
-                        content.match(/órgão\s+([^,\.]+)/i);
-      if (orgaoMatch) {
-        processedResult.organ = orgaoMatch[1].trim();
-      }
+      this.extractNomeacaoData(originalContent, processedResult);
     }
     
     else if (category === 'contrato') {
@@ -304,6 +334,119 @@ class DOMPBHScraper {
     }
 
     return processedResult;
+  }
+
+  // Extrair dados específicos de nomeações e exonerações
+  extractNomeacaoData(content, result) {
+    const movements = [];
+    
+    // Limpar conteúdo HTML para trabalhar apenas com texto
+    const cleanContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    
+    // Padrão aprimorado para exonerações - captura linha completa
+    // Formato: "Exonera Ariadna Miranda Valério Andrade, BM-324.917-2, do cargo em comissão DAM 3, código nº SMDE.DAM3.A.009"
+    const exoneracaoPattern = /Exonera\s+([A-ZÁÉÍÓÚÃÕÊÇ][^,]+),\s*(?:BM-([\d\.-]+),?\s*)?do\s+cargo\s+(?:em\s+comissão\s+)?([^,]+?)(?:,\s+código\s+nº\s+([A-Z0-9\.]+))?(?=\s|$|\.|Exonera|Nomear)/gi;
+    
+    let match;
+    while ((match = exoneracaoPattern.exec(cleanContent)) !== null) {
+      movements.push({
+        type: 'exoneração',
+        person: match[1].trim(),
+        matricula: match[2] ? `BM-${match[2]}` : null,
+        position: match[3].trim(),
+        code: match[4] || null
+      });
+    }
+
+    // Padrão aprimorado para nomeações com matrícula
+    // Formato: "Nomear João Silva Santos, BM-123.456-7, para o cargo de Coordenador Técnico, código nº COORD.TEC.001"
+    const nomeacaoPattern = /Nomear\s+([A-ZÁÉÍÓÚÃÕÊÇ][^,]+),\s*(?:BM-([\d\.-]+),?\s*)?(?:para|no|na)\s+(?:o\s+)?cargo\s+(?:de\s+|em\s+comissão\s+)?([^,]+?)(?:,\s+código\s+nº\s+([A-Z0-9\.]+))?(?=\s|$|\.|Exonera|Nomear)/gi;
+    
+    while ((match = nomeacaoPattern.exec(cleanContent)) !== null) {
+      movements.push({
+        type: 'nomeação',
+        person: match[1].trim(),
+        matricula: match[2] ? `BM-${match[2]}` : null,
+        position: match[3].trim(),
+        code: match[4] || null
+      });
+    }
+
+    // Padrão para nomeações simples (sem matrícula na linha principal)
+    const nomeacaoSimplePattern = /Nomear\s+([A-ZÁÉÍÓÚÃÕÊÇ][a-záéíóúãõêç\s]+?)\s+para\s+o\s+cargo\s+de\s+([^\.]+?)(?=\s|$|\.|Exonera|Nomear)/gi;
+    
+    while ((match = nomeacaoSimplePattern.exec(cleanContent)) !== null) {
+      const person = match[1].trim();
+      const fullPosition = match[2].trim();
+      
+      // Extrair código se presente na posição
+      let position = fullPosition;
+      let code = null;
+      const codeMatch = fullPosition.match(/(.+?),\s+código\s+nº\s+([A-Z0-9\.]+)/);
+      if (codeMatch) {
+        position = codeMatch[1].trim();
+        code = codeMatch[2];
+      }
+      
+      // Evitar duplicatas
+      if (!movements.some(m => m.person === person && m.type === 'nomeação')) {
+        movements.push({
+          type: 'nomeação',
+          person: person,
+          matricula: null,
+          position: position,
+          code: code
+        });
+      }
+    }
+
+    // Adicionar dados extraídos ao resultado
+    if (movements.length > 0) {
+      result.movements = movements;
+      result.movementCount = movements.length;
+      
+      // Para compatibilidade, manter campos individuais do primeiro movimento
+      const firstMovement = movements[0];
+      result.person = firstMovement.person;
+      result.matricula = firstMovement.matricula;
+      result.position = firstMovement.position;
+      result.jobCode = firstMovement.code;
+      result.movementType = firstMovement.type;
+      
+      console.log(`✅ Extraído ${movements.length} movimento(s) de pessoal: ${movements.map(m => `${m.type} - ${m.person}`).join(', ')}`);
+    } else {
+      // Fallback para padrões mais genéricos
+      this.extractGenericNomeacaoData(content, result);
+    }
+  }
+
+  // Método de fallback para extração genérica de nomeações
+  extractGenericNomeacaoData(content, result) {
+    // Tentar extrair nome da pessoa (padrão mais genérico)
+    const nomeMatch = content.match(/(?:nomear|exonerar)\s+([A-ZÁÊÕÇ][a-záêõç]+(?:\s+[A-ZÁÊÕÇ][a-záêõç]+)*)/i);
+    if (nomeMatch) {
+      result.person = nomeMatch[1];
+    }
+    
+    // Tentar extrair cargo
+    const cargoMatch = content.match(/cargo\s+(?:de\s+|em\s+comissão\s+)?([^,\.]+)/i) || 
+                      content.match(/função\s+de\s+([^,\.]+)/i);
+    if (cargoMatch) {
+      result.position = cargoMatch[1].trim();
+    }
+    
+    // Tentar extrair órgão/secretaria
+    const orgaoMatch = content.match(/secretaria\s+([^,\.]+)/i) || 
+                      content.match(/órgão\s+([^,\.]+)/i);
+    if (orgaoMatch) {
+      result.organ = orgaoMatch[1].trim();
+    }
+
+    // Tentar extrair matrícula genérica
+    const matriculaMatch = content.match(/BM-([\d\.-]+)/i);
+    if (matriculaMatch) {
+      result.matricula = `BM-${matriculaMatch[1]}`;
+    }
   }
 
   // Buscar em modo avançado com formulário
