@@ -182,14 +182,14 @@ class DOMPBHScraper {
   processResult(item, keyword) {
     const content = item.content.toLowerCase();
     const title = item.title;
+    const fullContent = item.content; // Manter conteúdo original para análise
     
     // Detectar tipo de publicação
     let type = 'Publicação';
     let category = 'geral';
     
-    // Nomeações
-    if (content.includes('nomear') || content.includes('nomeação') || 
-        content.includes('designar') || content.includes('exonerar')) {
+    // Nomeações - Padrões expandidos e mais flexíveis
+    if (this.isNominationContent(content, title)) {
       type = 'Nomeação';
       category = 'nomeacao';
     }
@@ -231,24 +231,19 @@ class DOMPBHScraper {
 
     // Extrair dados específicos por tipo
     if (category === 'nomeacao') {
-      // Tentar extrair nome da pessoa
-      const nomeMatch = content.match(/nomear\s+([A-ZÁÊÕÇ][a-záêõç]+(?:\s+[A-ZÁÊÕÇ][a-záêõç]+)*)/i);
-      if (nomeMatch) {
-        processedResult.person = nomeMatch[1];
-      }
+      const nominationData = this.extractNominationData(fullContent, content);
+      Object.assign(processedResult, nominationData);
       
-      // Tentar extrair cargo
-      const cargoMatch = content.match(/cargo\s+de\s+([^,\.]+)/i) || 
-                        content.match(/função\s+de\s+([^,\.]+)/i);
-      if (cargoMatch) {
-        processedResult.position = cargoMatch[1].trim();
-      }
-      
-      // Tentar extrair órgão
-      const orgaoMatch = content.match(/secretaria\s+([^,\.]+)/i) || 
-                        content.match(/órgão\s+([^,\.]+)/i);
-      if (orgaoMatch) {
-        processedResult.organ = orgaoMatch[1].trim();
+      // Log detalhado para debugging
+      if (nominationData.person || nominationData.detectedPatterns.length > 0) {
+        console.log('🔍 Nomeação detectada:', {
+          title: title.substring(0, 100),
+          person: nominationData.person,
+          position: nominationData.position,
+          organ: nominationData.organ,
+          patterns: nominationData.detectedPatterns,
+          actionType: nominationData.actionType
+        });
       }
     }
     
@@ -304,6 +299,299 @@ class DOMPBHScraper {
     }
 
     return processedResult;
+  }
+
+  // Detectar se o conteúdo contém nomeações com padrões expandidos
+  isNominationContent(content, title) {
+    const nominationPatterns = [
+      // Padrões básicos
+      /\bnomear\b/i,
+      /\bnomeação\b/i, 
+      /\bnomeações\b/i,
+      /\bdesignar\b/i,
+      /\bdesignação\b/i,
+      /\bexonerar\b/i,
+      /\bexoneração\b/i,
+      /\bexonerações\b/i,
+      
+      // Padrões com variações de formatação
+      /\bn\s*o\s*m\s*e\s*a\s*r\b/i,
+      /\bn\s*o\s*m\s*e\s*a\s*ç\s*ã\s*o\b/i,
+      /\be\s*x\s*o\s*n\s*e\s*r\s*a\s*r\b/i,
+      
+      // Padrões do título
+      /NOMEAR/,
+      /NOMEAÇÃO/,
+      /NOMEAÇÕES/,
+      /DESIGNAR/,
+      /EXONERAR/,
+      /EXONERAÇÃO/,
+      /EXONERAÇÕES/,
+      
+      // Padrões contextuais
+      /\bato\s+de\s+nomeação\b/i,
+      /\bato\s+de\s+exoneração\b/i,
+      /\bportaria\s+de\s+nomeação\b/i,
+      /\bportaria\s+de\s+exoneração\b/i,
+      /\bdecreto\s+de\s+nomeação\b/i,
+      /\bdecreto\s+de\s+exoneração\b/i,
+      
+      // Padrões para cargos comissionados
+      /\bcargo\s+comissionado\b/i,
+      /\bcargo\s+em\s+comissão\b/i,
+      /\bfunção\s+comissionada\b/i,
+      /\bfunção\s+gratificada\b/i,
+      
+      // Padrões de nomeação para concurso
+      /\bnomeação\s+de\s+aprovados?\b/i,
+      /\bconvocação\s+de\s+aprovados?\b/i,
+      /\bposse\s+de\s+servidores?\b/i
+    ];
+    
+    // Verificar título
+    const titleContent = title.toLowerCase();
+    for (const pattern of nominationPatterns) {
+      if (pattern.test(titleContent) || pattern.test(content)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  // Extrair dados de nomeação com algoritmos melhorados
+  extractNominationData(fullContent, lowerContent) {
+    const result = {
+      person: null,
+      position: null,
+      organ: null,
+      actionType: null,
+      detectedPatterns: [],
+      debugInfo: []
+    };
+    
+    // Detectar tipo de ação
+    result.actionType = this.detectActionType(lowerContent);
+    
+    // Análise de contexto estruturado (tabelas, listas) - prioridade alta
+    const structuredData = this.analyzeStructuredContent(fullContent);
+    if (structuredData.names.length > 0) {
+      result.person = structuredData.names[0];
+      result.position = structuredData.positions[0] || null;
+      result.organ = structuredData.organs[0] || null;
+      result.detectedPatterns.push('structured_content');
+      result.debugInfo.push(`Nomes estruturados encontrados: ${structuredData.names.join(', ')}`);
+    }
+    
+    // Se não encontrou em conteúdo estruturado, extrair nomes com padrões
+    if (!result.person) {
+      const names = this.extractBrazilianNames(fullContent);
+      if (names.length > 0) {
+        result.person = names[0];
+        result.debugInfo.push(`Nomes em texto encontrados: ${names.join(', ')}`);
+      }
+    }
+    
+    // Extrair cargo/posição se não foi encontrado em estrutura
+    if (!result.position) {
+      result.position = this.extractPosition(fullContent, lowerContent);
+    }
+    
+    // Extrair órgão se não foi encontrado em estrutura
+    if (!result.organ) {
+      result.organ = this.extractOrgan(fullContent, lowerContent);
+    }
+    
+    return result;
+  }
+
+  // Detectar tipo de ação (nomeação, exoneração, etc.)
+  detectActionType(content) {
+    if (/\bexonerar\b|\bexoneração\b|\bexonerações\b/i.test(content)) {
+      return 'exoneração';
+    } else if (/\bnomear\b|\bnomeação\b|\bnomeações\b|\bdesignar\b|\bdesignação\b/i.test(content)) {
+      return 'nomeação';
+    } else if (/\bconvocar\b|\bconvocação\b|\bposse\b/i.test(content)) {
+      return 'convocação';
+    }
+    return 'nomeação'; // padrão
+  }
+
+  // Extrair nomes brasileiros com padrões melhorados
+  extractBrazilianNames(content) {
+    const names = [];
+    
+    // Padrões para nomes brasileiros mais flexíveis
+    const namePatterns = [
+      // Padrão básico após verbos de nomeação - melhorado para capturar nome completo
+      /(?:nomear|designar|exonerar|convocar)\s+(?:a\s+)?(?:sr\.?\s*|sra\.?\s*|o\s+servidor\s+|a\s+servidora\s+)?([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+)+)/gi,
+      
+      // Nomes em maiúsculas (formato oficial) - mínimo 2 palavras
+      /\b([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ]{2,}(?:\s+(?:DA|DE|DO|DOS|DAS)?\s*[A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ]{2,})+)\b/g,
+      
+      // Nomes após "servidor(a)" ou "funcionário(a)"
+      /(?:servidor|servidora|funcionário|funcionária)\s+([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+)+)/gi,
+      
+      // Nomes em contexto de cargo
+      /([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+)+)\s*[,-]\s*(?:no\s+cargo|na\s+função|para\s+o\s+cargo)/gi,
+      
+      // Padrão específico: NOME - separado por traço (listas)
+      /([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ\s]+?)\s*[-–]\s*[A-Z][a-z]/g,
+      
+      // Exoneração específica: "EXONERAR, a pedido, NOME"
+      /exonerar\s*,\s*(?:a\s+pedido\s*,\s*)?([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][a-záêõçàíóúâôûãñ]+)+)/gi
+    ];
+    
+    for (const pattern of namePatterns) {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const name = match[1].trim();
+        // Filtrar nomes muito curtos, palavras comuns e duplicatas
+        if (name.length > 5 && 
+            this.isValidName(name) && 
+            !this.isCommonWord(name) && 
+            !names.includes(name)) {
+          names.push(name);
+        }
+      }
+    }
+    
+    return names;
+  }
+
+  // Verificar se é um nome válido
+  isValidName(name) {
+    // Nome deve ter pelo menos 2 palavras
+    const words = name.split(/\s+/);
+    if (words.length < 2) return false;
+    
+    // Cada palavra deve ter pelo menos 2 caracteres
+    for (const word of words) {
+      if (word.length < 2) return false;
+    }
+    
+    // Não deve conter palavras que claramente não são nomes
+    const invalidWords = ['PARA', 'COM', 'SEM', 'POR', 'ATE', 'ATÉ', 'JUNTO', 'EXERCER', 'CARGO'];
+    for (const word of words) {
+      if (invalidWords.includes(word.toUpperCase())) return false;
+    }
+    
+    return true;
+  }
+
+  // Verificar se é uma palavra comum (não um nome)
+  isCommonWord(word) {
+    const commonWords = [
+      'PARA', 'COM', 'SEM', 'POR', 'ATE', 'ATÉ', 'SOB', 'SOBRE', 'PELO', 'PELA',
+      'CARGO', 'FUNÇÃO', 'POSTO', 'SERVIDOR', 'SERVIDORA', 'FUNCIONÁRIO', 'FUNCIONÁRIA',
+      'SECRETARIA', 'ORGAO', 'ÓRGÃO', 'DEPARTAMENTO', 'SETOR', 'UNIDADE', 'SEÇÃO',
+      'PORTARIA', 'DECRETO', 'LEI', 'ARTIGO', 'INCISO', 'PARAGRAFO', 'PARÁGRAFO',
+      'NOMEAR', 'DESIGNAR', 'EXONERAR', 'CONVOCAÇÃO', 'APROVADOS', 'EXERCER', 'JUNTO'
+    ];
+    return commonWords.includes(word.toUpperCase());
+  }
+
+  // Extrair posição/cargo com padrões melhorados
+  extractPosition(fullContent, lowerContent) {
+    const positionPatterns = [
+      /(?:cargo|função|posto)\s+de\s+([^,\.;!\n]+)/gi,
+      /(?:para|no|na)\s+(?:cargo|função|posto)\s+(?:de\s+)?([^,\.;!\n]+)/gi,
+      /([^,\.;!\n]+?)\s*[,-]\s*cargo\s+comissionado/gi,
+      /([^,\.;!\n]+?)\s*[,-]\s*função\s+(?:comissionada|gratificada)/gi,
+      /(?:nomeação|designação)\s+para\s+([^,\.;!\n]+)/gi
+    ];
+    
+    for (const pattern of positionPatterns) {
+      const match = pattern.exec(fullContent);
+      if (match) {
+        const position = match[1].trim();
+        if (position.length > 3 && position.length < 200) {
+          return this.cleanExtractedText(position);
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  // Extrair órgão com padrões melhorados  
+  extractOrgan(fullContent, lowerContent) {
+    const organPatterns = [
+      /(?:secretaria|órgão|departamento|setor|unidade)\s+(?:municipal\s+)?(?:de\s+)?([^,\.;!\n]+)/gi,
+      /(?:na|da|do)\s+(secretaria[^,\.;!\n]+)/gi,
+      /(?:junto\s+(?:à|ao|a)\s+)([^,\.;!\n]+)/gi,
+      /(prefeitura\s+municipal[^,\.;!\n]*)/gi
+    ];
+    
+    for (const pattern of organPatterns) {
+      const match = pattern.exec(fullContent);
+      if (match) {
+        const organ = match[1].trim();
+        if (organ.length > 3 && organ.length < 200) {
+          return this.cleanExtractedText(organ);
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  // Analisar conteúdo estruturado (tabelas, listas)
+  analyzeStructuredContent(content) {
+    const result = {
+      names: [],
+      positions: [],
+      organs: []
+    };
+    
+    // Detectar listas de nomeações (padrões tabulares)
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // Procurar por linhas que parecem ter dados estruturados
+      if (line.length > 20 && line.length < 500) {
+        // Padrão: Nome - Cargo - Órgão
+        const structuredMatch = line.match(/^([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ\s]+?)\s*[-–]\s*([^-–]+?)\s*[-–]\s*(.+)$/);
+        if (structuredMatch) {
+          const name = structuredMatch[1].trim();
+          const position = structuredMatch[2].trim();
+          const organ = structuredMatch[3].trim();
+          
+          if (this.isValidName(name) && !this.isCommonWord(name)) {
+            result.names.push(name);
+            result.positions.push(position);
+            result.organs.push(organ);
+          }
+        }
+      }
+    }
+    
+    // Também procurar por padrões em linha única separados por traços
+    const singleLinePattern = /([A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ][A-ZÁÊÕÇÀÍÓÚÂÔÛÃÑ\s]+?)\s*[-–]\s*([^-–]+?)(?:\s*[-–]\s*(.+?))?(?=\s*[A-Z][A-Z]|\s*$)/g;
+    let match;
+    while ((match = singleLinePattern.exec(content)) !== null) {
+      const name = match[1].trim();
+      const position = match[2].trim();
+      const organ = match[3] ? match[3].trim() : null;
+      
+      if (this.isValidName(name) && !this.isCommonWord(name) && !result.names.includes(name)) {
+        result.names.push(name);
+        result.positions.push(position);
+        if (organ) result.organs.push(organ);
+      }
+    }
+    
+    return result;
+  }
+
+  // Limpar texto extraído
+  cleanExtractedText(text) {
+    return text
+      .replace(/\s+/g, ' ')
+      .replace(/[,;]$/, '')
+      .trim()
+      .substring(0, 200);
   }
 
   // Buscar em modo avançado com formulário
