@@ -93,14 +93,61 @@ async function performSearch(keyword, date, type) {
 }
 
 function generateSearchSummary(results, keyword) {
-    // ... (código da função generateSearchSummary sem alterações)
-  if (results.length === 0) { return `Nenhum resultado encontrado para "${keyword || 'busca'}" no Diário Oficial Municipal.`; }
+  if (results.length === 0) { 
+    return `Nenhum resultado encontrado para "${keyword || 'busca'}" no Diário Oficial Municipal.`; 
+  }
+  
   const byType = {};
-  results.forEach(r => { byType[r.type] = (byType[r.type] || 0) + 1; });
+  const byCategory = {};
+  let totalScore = 0;
+  let scoredResults = 0;
+  
+  results.forEach(r => { 
+    byType[r.type] = (byType[r.type] || 0) + 1; 
+    byCategory[r.category] = (byCategory[r.category] || 0) + 1;
+    
+    if (r.score !== undefined) {
+      totalScore += r.score;
+      scoredResults++;
+    }
+  });
+  
   let summary = `Foram encontrados ${results.length} resultado${results.length > 1 ? 's' : ''}`;
   if (keyword) { summary += ` para "${keyword}"`; }
   summary += '.\n\n';
-  Object.entries(byType).forEach(([tipo, count]) => { summary += `- ${tipo}: ${count} ocorrência(s)\n`; });
+  
+  // Summary by type
+  summary += '📊 Distribuição por tipo:\n';
+  Object.entries(byType).forEach(([tipo, count]) => { 
+    summary += `- ${tipo}: ${count} ocorrência(s)\n`; 
+  });
+  
+  // Enhanced summary for nomeação results
+  const nomeacaoResults = results.filter(r => r.category === 'nomeacao');
+  if (nomeacaoResults.length > 0) {
+    summary += '\n🎯 Detalhamento das Nomeações/Exonerações:\n';
+    
+    const withNames = nomeacaoResults.filter(r => r.person).length;
+    const withMatriculas = nomeacaoResults.filter(r => r.matricula).length;
+    const withCargos = nomeacaoResults.filter(r => r.position).length;
+    const withCodigos = nomeacaoResults.filter(r => r.codigo).length;
+    const withOrgaos = nomeacaoResults.filter(r => r.organ).length;
+    
+    summary += `- ${withNames} com nomes extraídos\n`;
+    summary += `- ${withMatriculas} com matrículas (BM-xxx.xxx-x)\n`;
+    summary += `- ${withCargos} com cargos identificados\n`;
+    summary += `- ${withCodigos} com códigos extraídos\n`;
+    summary += `- ${withOrgaos} com órgãos identificados\n`;
+    
+    if (scoredResults > 0) {
+      const avgScore = totalScore / scoredResults;
+      const highQuality = nomeacaoResults.filter(r => (r.score || 0) >= 80).length;
+      summary += `\n📈 Qualidade da extração:\n`;
+      summary += `- Score médio: ${avgScore.toFixed(1)}/100\n`;
+      summary += `- ${highQuality} resultado(s) de alta qualidade (≥80)\n`;
+    }
+  }
+  
   return summary.trim();
 }
 

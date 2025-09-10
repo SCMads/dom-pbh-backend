@@ -161,15 +161,38 @@ class DOMPBHScraper {
       // Primeiro, buscar todas as publicações da data
       const allResults = await this.searchByDate(date);
       
-      // Filtrar e processar resultados
+      // Filtrar e processar resultados com scoring
       const filteredResults = allResults
         .filter(item => {
           const searchText = `${item.title} ${item.content}`.toLowerCase();
           return searchText.includes(keyword.toLowerCase());
         })
-        .map(item => this.processResult(item, keyword));
+        .map(item => this.processResult(item, keyword))
+        .filter(result => {
+          // For nomeacao category, only include results with decent confidence scores
+          if (result.category === 'nomeacao') {
+            return result.score >= 50; // Minimum confidence threshold
+          }
+          return true; // Include other categories without score filtering
+        })
+        .sort((a, b) => {
+          // Sort by score (descending) for nomeacao results, others by date
+          if (a.category === 'nomeacao' && b.category === 'nomeacao') {
+            return (b.score || 0) - (a.score || 0);
+          }
+          return new Date(b.timestamp) - new Date(a.timestamp);
+        });
 
       console.log(`✅ ${filteredResults.length} resultados encontrados para "${keyword}"`);
+      
+      // Log quality statistics for nomeacao results
+      const nomeacaoResults = filteredResults.filter(r => r.category === 'nomeacao');
+      if (nomeacaoResults.length > 0) {
+        const avgScore = nomeacaoResults.reduce((sum, r) => sum + (r.score || 0), 0) / nomeacaoResults.length;
+        const highQuality = nomeacaoResults.filter(r => (r.score || 0) >= 80).length;
+        console.log(`📊 Nomeações/Exonerações: ${nomeacaoResults.length} encontradas, ${highQuality} de alta qualidade (score ≥80), média: ${avgScore.toFixed(1)}`);
+      }
+      
       return filteredResults;
 
     } catch (error) {
