@@ -161,15 +161,38 @@ class DOMPBHScraper {
       // Primeiro, buscar todas as publicações da data
       const allResults = await this.searchByDate(date);
       
-      // Filtrar e processar resultados
+      // Filtrar e processar resultados com scoring
       const filteredResults = allResults
         .filter(item => {
           const searchText = `${item.title} ${item.content}`.toLowerCase();
           return searchText.includes(keyword.toLowerCase());
         })
-        .map(item => this.processResult(item, keyword));
+        .map(item => this.processResult(item, keyword))
+        .filter(result => {
+          // For nomeacao category, only include results with decent confidence scores
+          if (result.category === 'nomeacao') {
+            return result.score >= 50; // Minimum confidence threshold
+          }
+          return true; // Include other categories without score filtering
+        })
+        .sort((a, b) => {
+          // Sort by score (descending) for nomeacao results, others by date
+          if (a.category === 'nomeacao' && b.category === 'nomeacao') {
+            return (b.score || 0) - (a.score || 0);
+          }
+          return new Date(b.timestamp) - new Date(a.timestamp);
+        });
 
       console.log(`✅ ${filteredResults.length} resultados encontrados para "${keyword}"`);
+      
+      // Log quality statistics for nomeacao results
+      const nomeacaoResults = filteredResults.filter(r => r.category === 'nomeacao');
+      if (nomeacaoResults.length > 0) {
+        const avgScore = nomeacaoResults.reduce((sum, r) => sum + (r.score || 0), 0) / nomeacaoResults.length;
+        const highQuality = nomeacaoResults.filter(r => (r.score || 0) >= 80).length;
+        console.log(`📊 Nomeações/Exonerações: ${nomeacaoResults.length} encontradas, ${highQuality} de alta qualidade (score ≥80), média: ${avgScore.toFixed(1)}`);
+      }
+      
       return filteredResults;
 
     } catch (error) {
@@ -181,16 +204,16 @@ class DOMPBHScraper {
   // Processar e categorizar resultado
   processResult(item, keyword) {
     const content = item.content.toLowerCase();
+    const originalContent = item.content; // Keep original case for extraction
     const title = item.title;
     
     // Detectar tipo de publicação
     let type = 'Publicação';
     let category = 'geral';
     
-    // Nomeações
-    if (content.includes('nomear') || content.includes('nomeação') || 
-        content.includes('designar') || content.includes('exonerar')) {
-      type = 'Nomeação';
+    // Enhanced detection for Nomeações/Exonerações with specific patterns
+    if (this.isNomeacaoOrExoneracao(originalContent)) {
+      type = this.determineNomeacaoType(originalContent);
       category = 'nomeacao';
     }
     // Contratos
@@ -231,25 +254,12 @@ class DOMPBHScraper {
 
     // Extrair dados específicos por tipo
     if (category === 'nomeacao') {
-      // Tentar extrair nome da pessoa
-      const nomeMatch = content.match(/nomear\s+([A-ZÁÊÕÇ][a-záêõç]+(?:\s+[A-ZÁÊÕÇ][a-záêõç]+)*)/i);
-      if (nomeMatch) {
-        processedResult.person = nomeMatch[1];
-      }
+      // Use enhanced extraction for nomeações/exonerações
+      const extractedData = this.extractNomeacaoData(originalContent);
+      Object.assign(processedResult, extractedData);
       
-      // Tentar extrair cargo
-      const cargoMatch = content.match(/cargo\s+de\s+([^,\.]+)/i) || 
-                        content.match(/função\s+de\s+([^,\.]+)/i);
-      if (cargoMatch) {
-        processedResult.position = cargoMatch[1].trim();
-      }
-      
-      // Tentar extrair órgão
-      const orgaoMatch = content.match(/secretaria\s+([^,\.]+)/i) || 
-                        content.match(/órgão\s+([^,\.]+)/i);
-      if (orgaoMatch) {
-        processedResult.organ = orgaoMatch[1].trim();
-      }
+      // Calculate confidence score
+      processedResult.score = this.calculateExtractionScore(extractedData, originalContent);
     }
     
     else if (category === 'contrato') {
@@ -304,6 +314,263 @@ class DOMPBHScraper {
     }
 
     return processedResult;
+  }
+
+  // Enhanced detection for nomeações and exonerações
+  isNomeacaoOrExoneracao(content) {
+    const lowerContent = content.toLowerCase();
+    
+    // Specific patterns for exonerations
+    const exoneracaoPatterns = [
+      /\bexonera\b/i,
+      /\bexoneração\b/i,
+      /do cargo em comissão/i,
+      /de cargo em comissão/i
+    ];
+    
+    // Specific patterns for appointments
+    const nomeacaoPatterns = [
+      /\bnomear\b/i,
+      /\bnomeação\b/i,
+      /\bdesignar\b/i,
+      /para exercer/i,
+      /para o cargo/i
+    ];
+    
+    return exoneracaoPatterns.some(pattern => pattern.test(content)) || 
+           nomeacaoPatterns.some(pattern => pattern.test(content));
+  }
+
+  // Determine the specific type of nomeação
+  determineNomeacaoType(content) {
+    if (/\bexonera\b/i.test(content) || /\bexoneração\b/i.test(content)) {
+      return 'Exoneração';
+    }
+    if (/\bnomear\b/i.test(content) || /\bnomeação\b/i.test(content)) {
+      return 'Nomeação';
+    }
+    if (/\bdesignar\b/i.test(content)) {
+      return 'Designação';
+    }
+    return 'Nomeação'; // Default
+  }
+
+  // Extract comprehensive data from nomeação/exoneração content
+  extractNomeacaoData(content) {
+    const data = {};
+    
+    // Extract person name with enhanced validation
+    data.person = this.extractPersonName(content);
+    
+    // Extract matricula (BM-xxx.xxx-x format)
+    data.matricula = this.extractMatricula(content);
+    
+    // Extract position/cargo
+    data.position = this.extractPosition(content);
+    
+    // Extract codigo
+    data.codigo = this.extractCodigo(content);
+    
+    // Extract organ/órgão
+    data.organ = this.extractOrgan(content);
+    
+    return data;
+  }
+
+  // Extract person name with validation against false positives
+  extractPersonName(content) {
+    // Enhanced patterns for exonerations - try multiple approaches
+    const exoneracaoPatterns = [
+      // "Exonera [Nome Completo], BM-xxx.xxx-x" (with comma before BM)
+      /\bexonera\s+([A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*)*),\s*BM-/i,
+      // "Exonera [Nome Completo] BM-" (without comma before BM)
+      /\bexonera\s+([A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*)*),?\s*BM-/i,
+      // "Exonera [Nome Completo], do cargo em comissão"
+      /\bexonera\s+([A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*)*),\s*do\s+cargo\s+em\s+comissão/i,
+      // "Exonera [Nome Completo] do cargo" (without comma)
+      /\bexonera\s+([A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*)*)\s+do\s+cargo/i,
+      // "Exonera [Nome Completo]," (general pattern with comma)
+      /\bexonera\s+([A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*)*),/i
+    ];
+    
+    // Enhanced patterns for appointments
+    const nomeacaoPatterns = [
+      // "Nomear [Nome Completo] para"
+      /\bnomear\s+([A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*)*)\s+para/i,
+      // "Nomear [Nome Completo]," (with comma)
+      /\bnomear\s+([A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*(?:\s+(?:da|de|do|dos|das)?\s*[A-ZÁÊÕÇ][a-záêõçãáéíóúàèìòùâêîôû]*)*),/i
+    ];
+    
+    const allPatterns = [...exoneracaoPatterns, ...nomeacaoPatterns];
+    
+    for (const pattern of allPatterns) {
+      const match = content.match(pattern);
+      if (match && match[1]) {
+        const name = match[1].trim();
+        if (this.validatePersonName(name)) {
+          return name;
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  // Validate if extracted text is a real person name (not a place or organization)
+  validatePersonName(name) {
+    if (!name || name.length < 3) return false;
+    
+    // Remove common false positives
+    const falsePositives = [
+      'belo horizonte',
+      'prefeitura',
+      'secretaria',
+      'municipal',
+      'governo',
+      'estado',
+      'municipio',
+      'dom pbh',
+      'câmara',
+      'assembleia',
+      'diário oficial',
+      'atos do prefeito',
+      'poder executivo',
+      'administração',
+      'chefia',
+      'gabinete'
+    ];
+    
+    const lowerName = name.toLowerCase().trim();
+    
+    // Check for false positives
+    if (falsePositives.some(fp => lowerName.includes(fp))) {
+      return false;
+    }
+    
+    // Valid person names should:
+    // 1. Have at least 2 words (first + last name)
+    // 2. Not contain organizational keywords
+    // 3. Have reasonable capitalization
+    
+    const words = name.trim().split(/\s+/);
+    
+    // Must have at least 2 words for a valid full name
+    if (words.length < 2) return false;
+    
+    // Check for organizational terms with word boundaries to avoid false positives
+    const orgTerms = ['ltda', 'sa', 'eireli', 'me', 'epp', 'secretaria', 'departamento', 'coordenação'];
+    if (orgTerms.some(term => {
+      const regex = new RegExp(`\\b${term}\\b`, 'i');
+      return regex.test(lowerName);
+    })) {
+      return false;
+    }
+    
+    // Basic validation for proper names - more lenient approach
+    // Names should generally start with uppercase letters
+    const validWordsCount = words.filter(word => {
+      if (word.length === 0) return false;
+      // Allow for prepositions and connectors to be lowercase
+      const lowercaseConnectors = ['da', 'de', 'do', 'dos', 'das', 'e', 'o', 'a'];
+      if (lowercaseConnectors.includes(word.toLowerCase())) {
+        return true;
+      }
+      // Check if first letter is uppercase (basic name validation)
+      return /^[A-ZÁÊÕÇ]/.test(word) && /^[A-Za-záêõçãáéíóúàèìòùâêîôû]+$/.test(word);
+    });
+    
+    // Allow if most words (at least 70%) look like proper names
+    return validWordsCount.length >= Math.ceil(words.length * 0.7);
+  }
+
+  // Extract matricula in BM-xxx.xxx-x format
+  extractMatricula(content) {
+    const matriculaPattern = /\bBM-(\d{3}\.\d{3}-\d)\b/i;
+    const match = content.match(matriculaPattern);
+    return match ? match[0] : null;
+  }
+
+  // Extract position/cargo information
+  extractPosition(content) {
+    const patterns = [
+      // "do cargo em comissão [Cargo]" or "de cargo em comissão [Cargo]"
+      /d[oe]\s+cargo\s+em\s+comissão\s+(?:de\s+)?([^,\.]+?)(?:\s*,|\s*código|\s*da\s+chefia|$)/i,
+      // "cargo de [Cargo]"
+      /cargo\s+de\s+([^,\.]+?)(?:\s*,|\s*código|$)/i,
+      // "função de [Cargo]"
+      /função\s+de\s+([^,\.]+?)(?:\s*,|\s*código|$)/i,
+      // For patterns like "DAM 3", "DAM 4" etc.
+      /comissão\s+(DAM\s+\d+|[A-Z]{2,}\s*\d*)/i
+    ];
+    
+    for (const pattern of patterns) {
+      const match = content.match(pattern);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+    
+    return null;
+  }
+
+  // Extract codigo information
+  extractCodigo(content) {
+    const patterns = [
+      /código\s+n[º°]\s*([A-Z0-9\.\-]+)/i,
+      /código\s+([A-Z0-9\.\-]+)/i
+    ];
+    
+    for (const pattern of patterns) {
+      const match = content.match(pattern);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+    
+    return null;
+  }
+
+  // Extract organ/secretaria information
+  extractOrgan(content) {
+    const patterns = [
+      /da\s+chefia\s+da\s+([^,\.]+?)(?:\s*\.|$)/i,
+      /secretaria\s+municipal\s+(?:de\s+)?([^,\.]+?)(?:\s*,|\s*\.|$)/i,
+      /órgão\s+([^,\.]+?)(?:\s*,|\s*\.|$)/i,
+      /departamento\s+([^,\.]+?)(?:\s*,|\s*\.|$)/i
+    ];
+    
+    for (const pattern of patterns) {
+      const match = content.match(pattern);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+    
+    return null;
+  }
+
+  // Calculate confidence score for extraction quality
+  calculateExtractionScore(extractedData, content) {
+    let score = 0;
+    
+    // Base points for finding key elements
+    if (extractedData.person) score += 30;
+    if (extractedData.matricula) score += 25;
+    if (extractedData.position) score += 20;
+    if (extractedData.codigo) score += 15;
+    if (extractedData.organ) score += 10;
+    
+    // Bonus points for specific patterns
+    if (/\bexonera\b/i.test(content)) score += 10;
+    if (/do cargo em comissão/i.test(content)) score += 10;
+    if (/BM-\d{3}\.\d{3}-\d/i.test(content)) score += 10;
+    if (/código\s+n[º°]/i.test(content)) score += 5;
+    if (/atos do prefeito/i.test(content)) score += 5;
+    
+    // Penalty for missing critical elements
+    if (!extractedData.person) score -= 20;
+    
+    return Math.max(0, Math.min(100, score)); // Clamp between 0 and 100
   }
 
   // Buscar em modo avançado com formulário
